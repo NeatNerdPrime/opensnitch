@@ -62,9 +62,9 @@ var (
 	logFile           = ""
 	logUTC            = true
 	logMicro          = false
-	rulesPath         = "/etc/opensnitchd/rules/"
+	rulesPath         = ""
 	configFile        = "/etc/opensnitchd/default-config.json"
-	fwConfigFile      = "/etc/opensnitchd/system-fw.json"
+	fwConfigFile      = ""
 	ebpfModPath       = "" // /usr/lib/opensnitchd/ebpf
 	noLiveReload      = false
 	queueNum          = 0
@@ -103,7 +103,7 @@ func init() {
 	flag.BoolVar(&showVersion, "version", debug, "Show daemon version of this executable and exit.")
 	flag.BoolVar(&checkRequirements, "check-requirements", debug, "Check system requirements for incompatibilities.")
 
-	flag.StringVar(&procmonMethod, "process-monitor-method", procmonMethod, "How to search for processes path. Options: ftrace, audit (experimental), ebpf (experimental), proc (default)")
+	flag.StringVar(&procmonMethod, "process-monitor-method", procmonMethod, "Options: audit, ebpf, proc (default)")
 	flag.StringVar(&uiSocket, "ui-socket", uiSocket, "Path the UI gRPC service listener (https://github.com/grpc/grpc/blob/master/doc/naming.md).")
 	flag.IntVar(&queueNum, "queue-num", queueNum, "Netfilter queue number.")
 	flag.IntVar(&workers, "workers", workers, "Number of concurrent workers.")
@@ -151,19 +151,33 @@ func overwriteLogging() bool {
 	return debug || warning || important || errorlog || logFile != "" || logMicro
 }
 
-func setupQueues() {
+// overwriteFw reloads the fw with the configuration file specified via cli.
+func overwriteFw(cfg *config.Config, qNum uint16, fwCfg string) {
+	firewall.Reload(
+		cfg.Firewall,
+		fwCfg,
+		cfg.FwOptions.MonitorInterval,
+		qNum,
+	)
+	// TODO: Close() closes the daemon if closing the queue timeouts
+	//queue.Close()
+	//repeatQueue.Close()
+	//setupQueues(qNum)
+}
+
+func setupQueues(qNum uint16) {
 	// prepare the queue
 	var err error
-	queue, err = netfilter.NewQueue(uint16(queueNum))
+	queue, err = netfilter.NewQueue(qNum)
 	if err != nil {
-		msg := fmt.Sprintf("Error creating queue #%d: %s", queueNum, err)
+		msg := fmt.Sprintf("Error creating queue #%d: %s", qNum, err)
 		uiClient.SendWarningAlert(msg)
 		log.Warning("Is opensnitchd already running?")
 		log.Fatal(msg)
 	}
 	pktChan = queue.Packets()
 
-	repeatQueueNum = queueNum + 1
+	repeatQueueNum = int(qNum) + 1
 
 	repeatQueue, err = netfilter.NewQueue(uint16(repeatQueueNum))
 	if err != nil {
@@ -173,6 +187,7 @@ func setupQueues() {
 		log.Warning(msg)
 	}
 	repeatPktChan = repeatQueue.Packets()
+	log.Info("Listening on queue number %d ...", qNum)
 }
 
 func setupLogging() {
@@ -392,7 +407,7 @@ func onPacket(packet netfilter.Packet) {
 	// Parse the connection state
 	con := conman.Parse(packet, uiClient.InterceptUnknown())
 	if con == nil {
-		applyDefaultAction(&packet)
+		applyDefaultAction(&packet, nil)
 		return
 	}
 	// accept our own connections
@@ -412,12 +427,15 @@ func onPacket(packet netfilter.Packet) {
 	stats.OnConnectionEvent(con, r, r == nil)
 }
 
-func applyDefaultAction(packet *netfilter.Packet) {
+func applyDefaultAction(packet *netfilter.Packet, con *conman.Connection) {
 	if uiClient.DefaultAction() == rule.Allow {
 		packet.SetVerdictAndMark(netfilter.NF_ACCEPT, packet.Mark)
-	} else {
-		packet.SetVerdict(netfilter.NF_DROP)
+		return
 	}
+	if uiClient.DefaultAction() == rule.Reject && con != nil {
+		netlink.KillSocket(con.Protocol, con.SrcIP, con.SrcPort, con.DstIP, con.DstPort)
+	}
+	packet.SetVerdict(netfilter.NF_DROP)
 }
 
 func acceptOrDeny(packet *netfilter.Packet, con *conman.Connection) *rule.Rule {
@@ -430,7 +448,7 @@ func acceptOrDeny(packet *netfilter.Packet, con *conman.Connection) *rule.Rule {
 		// send a request to the UI client if
 		// 1) connected and running and 2) we are not already asking
 		if uiClient.Connected() == false || uiClient.GetIsAsking() == true {
-			applyDefaultAction(packet)
+			applyDefaultAction(packet, con)
 			log.Debug("UI is not running or busy, connected: %v, running: %v", uiClient.Connected(), uiClient.GetIsAsking())
 			return nil
 		}
@@ -472,7 +490,7 @@ func acceptOrDeny(packet *netfilter.Packet, con *conman.Connection) *rule.Rule {
 		r = uiClient.Ask(con)
 		if r == nil {
 			log.Error("Invalid rule received, applying default action")
-			applyDefaultAction(packet)
+			applyDefaultAction(packet, con)
 			return nil
 		}
 		ok := false
@@ -514,7 +532,7 @@ func acceptOrDeny(packet *netfilter.Packet, con *conman.Connection) *rule.Rule {
 	}
 
 	if r.Enabled == false {
-		applyDefaultAction(packet)
+		applyDefaultAction(packet, con)
 		ruleName := log.Green(r.Name)
 		log.Info("DISABLED (%s) %s %s -> %s:%d (%s)", uiClient.DefaultAction(), log.Bold(log.Green("✔")), log.Bold(con.Process.Path), log.Bold(con.To()), con.DstPort, ruleName)
 
@@ -553,6 +571,7 @@ func main() {
 
 	setupLogging()
 	setupProfiling()
+	setupSignals()
 
 	log.Important("Starting %s v%s", core.Name, core.Version)
 
@@ -561,59 +580,59 @@ func main() {
 		log.Fatal("%s", err)
 	}
 
-	if err == nil && cfg.Rules.Path != "" {
-		rulesPath = cfg.Rules.Path
+	if cfg.Rules.Path == "" {
+		cfg.Rules.Path = rule.DefaultPath
 	}
-	if rulesPath == "" {
-		log.Fatal("rules path cannot be empty")
-	}
-
-	rulesPath, err := core.ExpandPath(rulesPath)
-	if err != nil {
-		log.Fatal("Error accessing rules path (does it exist?): %s", err)
-	}
-
-	setupSignals()
-
-	log.Info("Loading rules from %s ...", rulesPath)
+	log.Info("Loading rules from %s ...", cfg.Rules.Path)
 	rules, err = rule.NewLoader(!noLiveReload)
 	if err != nil {
-		log.Fatal("%s", err)
-	} else if err = rules.Load(rulesPath); err != nil {
 		log.Fatal("%s", err)
 	}
 	stats = statistics.New(rules)
 	loggerMgr = loggers.NewLoggerManager()
+	stats.SetLoggers(loggerMgr)
 	uiClient = ui.NewClient(uiSocket, configFile, stats, rules, loggerMgr)
 
-	setupWorkers()
-	setupQueues()
+	// default expected queue from the cli is 0. If it's greater than 0
+	// overwrite config value (which by default is also 0)
+	qNum := cfg.FwOptions.QueueNum
+	if uint16(queueNum) != cfg.FwOptions.QueueNum && queueNum > 0 {
+		qNum = uint16(queueNum)
+	}
+	log.Info("Using queue number %d ...", qNum)
 
-	fwConfigPath := fwConfigFile
-	if fwConfigPath == "" {
-		fwConfigPath = cfg.FwOptions.ConfigPath
-	}
-	log.Info("Using system fw configuration %s ...", fwConfigPath)
-	// queue is ready, run firewall rules and start intercepting connections
-	if err = firewall.Init(
-		uiClient.GetFirewallType(),
-		fwConfigPath,
-		cfg.FwOptions.MonitorInterval,
-		&queueNum); err != nil {
-		log.Warning("%s", err)
-		uiClient.SendWarningAlert(err)
-	}
+	setupWorkers()
+	setupQueues(qNum)
+
+	// queue and firewall rules should be ready by now
 
 	uiClient.Connect()
 	listenToEvents()
 
+	// overwrite configuration options with the ones specified from the cli
+
 	if overwriteLogging() {
 		setupLogging()
 	}
+
+	if fwConfigFile != "" {
+		log.Info("Reloading fw rules from %s, queue %d ...", fwConfigFile, qNum)
+		overwriteFw(cfg, qNum, fwConfigFile)
+	}
+	log.Info("Using system fw configuration %s ...", fwConfigFile)
+
+	if rulesPath != "" {
+		log.Info("Reloading rules from %s ...", rulesPath)
+		if err := rules.Reload(rulesPath); err != nil {
+			log.Fatal("Error loading rules path %s", rulesPath)
+		}
+	}
+
 	// overwrite monitor method from configuration if the user has passed
 	// the option via command line.
-	if procmonMethod != "" {
-		if err := monitor.ReconfigureMonitorMethod(procmonMethod, cfg.Ebpf.ModulesPath); err != nil {
+	if procmonMethod != "" || (ebpfModPath != "" && ebpfModPath != cfg.Ebpf.ModulesPath) {
+		log.Info("Reloading proc monitor (%s) (ebpf mods path: %s)...", procmonMethod, cfg.Ebpf.ModulesPath)
+		if err := monitor.ReconfigureMonitorMethod(procmonMethod, cfg.Ebpf); err != nil {
 			msg := fmt.Sprintf("Unable to set process monitor method via parameter: %v", err)
 			uiClient.SendWarningAlert(msg)
 			log.Warning(msg)

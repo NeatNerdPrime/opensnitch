@@ -25,11 +25,12 @@ import (
 type Loader struct {
 	watcher           *fsnotify.Watcher
 	rules             map[string]*Rule
-	path              string
 	rulesKeys         []string
+	Path              string
 	liveReload        bool
 	liveReloadRunning bool
 	checkSums         bool
+	stopLiveReload    chan struct{}
 
 	sync.RWMutex
 }
@@ -42,11 +43,12 @@ func NewLoader(liveReload bool) (*Loader, error) {
 		return nil, err
 	}
 	return &Loader{
-		path:              "",
+		Path:              "",
 		rules:             make(map[string]*Rule),
 		liveReload:        liveReload,
 		watcher:           watcher,
 		liveReloadRunning: false,
+		stopLiveReload:    make(chan struct{}),
 	}, nil
 }
 
@@ -83,8 +85,41 @@ func (l *Loader) HasChecksums(op Operand) {
 	}
 }
 
+// Reload loads rules from the specified path, deleting existing loaded
+// rules from memory.
+func (l *Loader) Reload(path string) error {
+	if path == "" {
+		path = DefaultPath
+	}
+	log.Info("rules.Loader.Reload(): %s", path)
+
+	// check that the new path exists before reloading
+	if core.Exists(path) == false {
+		return fmt.Errorf("The new path '%s' does not exist", path)
+	}
+
+	// stop monitors
+	if l.liveReloadRunning {
+		l.stopLiveReload <- struct{}{}
+	}
+	if l.watcher != nil {
+		l.watcher.Remove(l.Path)
+	}
+	for _, r := range l.rules {
+		l.cleanListsRule(r)
+	}
+
+	// then delete the rules, and reload everything
+	l.Lock()
+	l.rulesKeys = make([]string, 0)
+	l.rules = make(map[string]*Rule)
+	l.Unlock()
+	return l.Load(path)
+}
+
 // Load loads rules files from disk.
 func (l *Loader) Load(path string) error {
+	log.Debug("rules.Loader.Load(): %s", path)
 	if core.Exists(path) == false {
 		return fmt.Errorf("Path '%s' does not exist\nCreate it if you want to save rules to disk", path)
 	}
@@ -99,7 +134,7 @@ func (l *Loader) Load(path string) error {
 		return fmt.Errorf("Error globbing '%s': %s", expr, err)
 	}
 
-	l.path = path
+	l.Path = path
 	if len(l.rules) == 0 {
 		l.rules = make(map[string]*Rule)
 	}
@@ -124,7 +159,7 @@ func (l *Loader) Load(path string) error {
 func (l *Loader) Add(rule *Rule, saveToDisk bool) error {
 	l.addUserRule(rule)
 	if saveToDisk {
-		fileName := filepath.Join(l.path, fmt.Sprintf("%s.json", rule.Name))
+		fileName := filepath.Join(l.Path, fmt.Sprintf("%s.json", rule.Name))
 		return l.Save(rule, fileName)
 	}
 	return nil
@@ -139,7 +174,7 @@ func (l *Loader) Replace(rule *Rule, saveToDisk bool) error {
 		l.Lock()
 		defer l.Unlock()
 
-		fileName := filepath.Join(l.path, fmt.Sprintf("%s.json", rule.Name))
+		fileName := filepath.Join(l.Path, fmt.Sprintf("%s.json", rule.Name))
 		return l.Save(rule, fileName)
 	}
 	return nil
@@ -147,7 +182,8 @@ func (l *Loader) Replace(rule *Rule, saveToDisk bool) error {
 
 // Save a rule to disk.
 func (l *Loader) Save(rule *Rule, path string) error {
-	rule.Updated = time.Now()
+	// When saving the rule, use always RFC3339 format for the Created field (#1140).
+	rule.Updated = time.Now().Format(time.RFC3339)
 	raw, err := json.MarshalIndent(rule, "", "  ")
 	if err != nil {
 		return fmt.Errorf("Error while saving rule %s to %s: %s", rule, path, err)
@@ -255,7 +291,7 @@ func (l *Loader) deleteRule(filePath string) {
 }
 
 func (l *Loader) deleteRuleFromDisk(ruleName string) error {
-	path := fmt.Sprint(l.path, "/", ruleName, ".json")
+	path := fmt.Sprint(l.Path, "/", ruleName, ".json")
 	return os.Remove(path)
 }
 
@@ -269,7 +305,8 @@ func (l *Loader) deleteOldRuleFromDisk(oldRule, newRule *Rule) {
 	}
 }
 
-// cleanListsRule erases the list of domains of an Operator of type Lists
+// cleanListsRule erases the lists loaded of an Operator of type Lists,
+// and stops the workers monitoring the lists.
 func (l *Loader) cleanListsRule(oldRule *Rule) {
 	if oldRule.Operator.Type == Lists {
 		oldRule.Operator.StopMonitoringLists()
@@ -404,8 +441,8 @@ func (l *Loader) scheduleTemporaryRule(rule Rule) error {
 func (l *Loader) liveReloadWorker() {
 	l.liveReloadRunning = true
 
-	log.Debug("Rules watcher started on path %s ...", l.path)
-	if err := l.watcher.Add(l.path); err != nil {
+	log.Debug("Rules watcher started on path %s ...", l.Path)
+	if err := l.watcher.Add(l.Path); err != nil {
 		log.Error("Could not watch path: %s", err)
 		l.liveReloadRunning = false
 		return
@@ -413,6 +450,8 @@ func (l *Loader) liveReloadWorker() {
 
 	for {
 		select {
+		case <-l.stopLiveReload:
+			goto Exit
 		case event := <-l.watcher.Events:
 			// a new rule json file has been created or updated
 			if event.Op&fsnotify.Write == fsnotify.Write {
@@ -434,6 +473,9 @@ func (l *Loader) liveReloadWorker() {
 			log.Error("File system watcher error: %s", err)
 		}
 	}
+Exit:
+	log.Debug("[rules] liveReloadWorker() exited")
+	l.liveReloadRunning = false
 }
 
 // FindFirstMatch will try match the connection against the existing rule set.

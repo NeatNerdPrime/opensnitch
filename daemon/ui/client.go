@@ -31,7 +31,6 @@ var (
 	// While the GUI is connected, deny by default everything until the user takes an action.
 	clientConnectedRule = rule.Create("ui.client.connected", "", true, false, false, rule.Deny, rule.Once, dummyOperator)
 	clientErrorRule     = rule.Create("ui.client.error", "", true, false, false, rule.Allow, rule.Once, dummyOperator)
-	clientConfig        config.Config
 
 	maxQueuedAlerts = 1024
 )
@@ -42,7 +41,9 @@ type Client struct {
 	streamNotifications protocol.UI_NotificationsClient
 	clientCtx           context.Context
 	clientCancel        context.CancelFunc
+	config              config.Config
 
+	loggers       *loggers.LoggerManager
 	stats         *statistics.Statistics
 	rules         *rule.Loader
 	con           *grpc.ClientConn
@@ -67,6 +68,7 @@ func NewClient(socketPath, localConfigFile string, stats *statistics.Statistics,
 		configFile = localConfigFile
 	}
 	c := &Client{
+		loggers:      loggers,
 		stats:        stats,
 		rules:        rules,
 		isUnixSocket: false,
@@ -74,6 +76,7 @@ func NewClient(socketPath, localConfigFile string, stats *statistics.Statistics,
 		isConnected:  make(chan bool),
 		alertsChan:   make(chan protocol.Alert, maxQueuedAlerts),
 	}
+	c.config.Rules.Path = rules.Path
 	//for i := 0; i < 4; i++ {
 	go c.alertsDispatcher()
 
@@ -86,11 +89,8 @@ func NewClient(socketPath, localConfigFile string, stats *statistics.Statistics,
 	if socketPath != "" {
 		c.setSocketPath(c.getSocketPath(socketPath))
 	}
-	procmon.EventsCache.SetComputeChecksums(clientConfig.Rules.EnableChecksums)
-	rules.EnableChecksums(clientConfig.Rules.EnableChecksums)
-	loggers.Load(clientConfig.Server.Loggers, clientConfig.Stats.Workers)
-	stats.SetLimits(clientConfig.Stats)
-	stats.SetLoggers(loggers)
+	procmon.EventsCache.SetComputeChecksums(c.config.Rules.EnableChecksums)
+	rules.EnableChecksums(c.config.Rules.EnableChecksums)
 
 	return c
 }
@@ -108,26 +108,26 @@ func (c *Client) Close() {
 // ProcMonitorMethod returns the monitor method configured.
 // If it's not present in the config file, it'll return an empty string.
 func (c *Client) ProcMonitorMethod() string {
-	clientConfig.RLock()
-	defer clientConfig.RUnlock()
-	return clientConfig.ProcMonitorMethod
+	c.RLock()
+	defer c.RUnlock()
+	return c.config.ProcMonitorMethod
 }
 
 // InterceptUnknown returns
 func (c *Client) InterceptUnknown() bool {
-	clientConfig.RLock()
-	defer clientConfig.RUnlock()
-	return clientConfig.InterceptUnknown
+	c.RLock()
+	defer c.RUnlock()
+	return c.config.InterceptUnknown
 }
 
 // GetFirewallType returns the firewall to use
 func (c *Client) GetFirewallType() string {
-	clientConfig.RLock()
-	defer clientConfig.RUnlock()
-	if clientConfig.Firewall == "" {
+	c.RLock()
+	defer c.RUnlock()
+	if c.config.Firewall == "" {
 		return iptables.Name
 	}
-	return clientConfig.Firewall
+	return c.config.Firewall
 }
 
 // DefaultAction returns the default configured action for
@@ -255,7 +255,7 @@ func (c *Client) openSocket() (err error) {
 	c.Lock()
 	defer c.Unlock()
 
-	dialOption, err := auth.New(&clientConfig)
+	dialOption, err := auth.New(&c.config)
 	if err != nil {
 		return fmt.Errorf("Invalid client auth options: %s", err)
 	}

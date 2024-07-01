@@ -1,11 +1,17 @@
 from threading import Lock
 import configparser
-import pyinotify
 import threading
 import glob
 import os
 import re
 import locale
+
+is_pyinotify_available = True
+try:
+    import pyinotify
+except Exception as e:
+    is_pyinotify_available = False
+    print("Error importing pyinotify:", e)
 
 DESKTOP_PATHS = tuple([
     os.path.join(d, 'applications')
@@ -36,7 +42,8 @@ class LinuxDesktopParser(threading.Thread):
             for desktop_file in glob.glob(os.path.join(desktop_path, '*.desktop')):
                 self._parse_desktop_file(desktop_file)
 
-        self.start()
+        if is_pyinotify_available:
+            self.start()
 
     def get_locale(self):
         try:
@@ -101,7 +108,7 @@ class LinuxDesktopParser(threading.Thread):
             "/usr/share/icons/HighContrast/scalable/apps/",
             "/usr/share/icons/HighContrast/48x48/apps/"
         )
-        icon_exts = (".svg", ".png", ".svg")
+        icon_exts = (".svg", ".png", ".xpm")
         for idir in icon_dirs:
             for iext in icon_exts:
                 iconPath = idir + app_name

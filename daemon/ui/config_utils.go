@@ -2,12 +2,15 @@ package ui
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 
 	"runtime/debug"
 
 	"github.com/evilsocket/opensnitch/daemon/firewall"
 	"github.com/evilsocket/opensnitch/daemon/log"
+	"github.com/evilsocket/opensnitch/daemon/netlink"
+	"github.com/evilsocket/opensnitch/daemon/procmon"
 	"github.com/evilsocket/opensnitch/daemon/procmon/monitor"
 	"github.com/evilsocket/opensnitch/daemon/rule"
 	"github.com/evilsocket/opensnitch/daemon/ui/config"
@@ -40,13 +43,24 @@ func (c *Client) setSocketPath(socketPath string) {
 }
 
 func (c *Client) isProcMonitorEqual(newMonitorMethod string) bool {
-	clientConfig.RLock()
-	defer clientConfig.RUnlock()
+	c.RLock()
+	defer c.RUnlock()
 
-	return newMonitorMethod == clientConfig.ProcMonitorMethod
+	return newMonitorMethod == c.config.ProcMonitorMethod
 }
 
 func (c *Client) loadDiskConfiguration(reload bool) {
+	// https://pkg.go.dev/github.com/fsnotify/fsnotify#Watcher.Add
+	// "A watch will be automatically removed if the watched path is deleted or renamed"
+	// "A path can only be watched once; watching it more than once is a no-op and will not return an error"
+	//
+	// Add the config file every time we read the file, to survive:
+	// - malformed json file
+	// - intermediate file removal (when writing we receive 2 write events, one of 0 bytes)
+	if err := c.configWatcher.Add(configFile); err != nil {
+		log.Error("Could not watch path: %s", err)
+	}
+
 	raw, err := config.Load(configFile)
 	if err != nil || len(raw) == 0 {
 		// Sometimes we may receive 2 Write events on monitorConfigWorker,
@@ -55,86 +69,161 @@ func (c *Client) loadDiskConfiguration(reload bool) {
 		return
 	}
 
-	if ok := c.loadConfiguration(raw); ok {
-		if err := c.configWatcher.Add(configFile); err != nil {
-			log.Error("Could not watch path: %s", err)
-			return
-		}
-	}
-
-	if reload {
-		firewall.Reload(
-			clientConfig.Firewall,
-			clientConfig.FwOptions.ConfigPath,
-			clientConfig.FwOptions.MonitorInterval,
-		)
+	err = c.loadConfiguration(reload, raw)
+	if err != nil {
+		log.Error("[client] error loading config file: %s", err.Error())
+		c.SendWarningAlert(err.Error())
 		return
 	}
 
+	if reload {
+		return
+	}
 	go c.monitorConfigWorker()
 }
 
-func (c *Client) loadConfiguration(rawConfig []byte) bool {
+func (c *Client) loadConfiguration(reload bool, rawConfig []byte) error {
 	var err error
-	clientConfig, err = config.Parse(rawConfig)
+	newConfig, err := config.Parse(rawConfig)
 	if err != nil {
-		msg := fmt.Sprintf("Error parsing configuration %s: %s", configFile, err)
-		log.Error(msg)
-		c.SendWarningAlert(msg)
-		return false
+		return fmt.Errorf("parsing configuration %s: %s", configFile, err)
 	}
 
-	clientConfig.Lock()
-	defer clientConfig.Unlock()
+	if err := c.reloadConfiguration(reload, newConfig); err != nil {
+		return fmt.Errorf("reloading configuration: %s", err.Msg)
+	}
+	c.Lock()
+	c.config = newConfig
+	c.Unlock()
+	return nil
+}
+
+func (c *Client) reloadConfiguration(reload bool, newConfig config.Config) *monitor.Error {
 
 	// firstly load config level, to detect further errors if any
-	if clientConfig.LogLevel != nil {
-		log.SetLogLevel(int(*clientConfig.LogLevel))
+	if newConfig.LogLevel != nil {
+		log.SetLogLevel(int(*newConfig.LogLevel))
 	}
-	log.SetLogUTC(clientConfig.LogUTC)
-	log.SetLogMicro(clientConfig.LogMicro)
-	if clientConfig.Server.LogFile != "" {
+	log.SetLogUTC(newConfig.LogUTC)
+	log.SetLogMicro(newConfig.LogMicro)
+	if newConfig.Server.LogFile != "" {
+		log.Debug("[config] using config.server.logfile: %s", newConfig.Server.LogFile)
 		log.Close()
-		log.OpenFile(clientConfig.Server.LogFile)
+		log.OpenFile(newConfig.Server.LogFile)
+	}
+	if !reflect.DeepEqual(c.config.Server.Loggers, newConfig.Server.Loggers) {
+		log.Debug("[config] reloading config.server.loggers")
+		c.loggers.Stop()
+		c.loggers.Load(newConfig.Server.Loggers)
+		c.stats.SetLoggers(c.loggers)
+	} else {
+		log.Debug("[config] config.server.loggers not changed")
 	}
 
-	if clientConfig.Server.Address != "" {
-		tempSocketPath := c.getSocketPath(clientConfig.Server.Address)
+	if !reflect.DeepEqual(newConfig.Stats, c.config.Stats) {
+		log.Debug("[config] reloading config.stats")
+		c.stats.SetLimits(newConfig.Stats)
+	} else {
+		log.Debug("[config] config.stats not changed")
+	}
+
+	reconnect := newConfig.Server.Authentication.Type != c.config.Server.Authentication.Type ||
+		!reflect.DeepEqual(newConfig.Server.Authentication.TLSOptions, c.config.Server.Authentication.TLSOptions)
+
+	if newConfig.Server.Address != "" {
+		tempSocketPath := c.getSocketPath(newConfig.Server.Address)
+		log.Debug("[config] using config.server.address: %s", newConfig.Server.Address)
 		if tempSocketPath != c.socketPath {
 			// disconnect, and let the connection poller reconnect to the new address
-			c.disconnect()
+			reconnect = true
 		}
 		c.setSocketPath(tempSocketPath)
 	}
-	if clientConfig.DefaultAction != "" {
-		clientDisconnectedRule.Action = rule.Action(clientConfig.DefaultAction)
-		clientErrorRule.Action = rule.Action(clientConfig.DefaultAction)
+
+	if reconnect {
+		log.Debug("[config] config.server.address.* changed, reconnecting to %s", c.socketPath)
+		c.disconnect()
+	}
+
+	if newConfig.DefaultAction != "" {
+		clientDisconnectedRule.Action = rule.Action(newConfig.DefaultAction)
+		clientErrorRule.Action = rule.Action(newConfig.DefaultAction)
 		// TODO: reconfigure connected rule if changed, but not save it to disk.
-		//clientConnectedRule.Action = rule.Action(clientConfig.DefaultAction)
+		//clientConnectedRule.Action = rule.Action(newConfig.DefaultAction)
 	}
-	if clientConfig.DefaultDuration != "" {
-		clientDisconnectedRule.Duration = rule.Duration(clientConfig.DefaultDuration)
-		clientErrorRule.Duration = rule.Duration(clientConfig.DefaultDuration)
+
+	if newConfig.DefaultDuration != "" {
+		clientDisconnectedRule.Duration = rule.Duration(newConfig.DefaultDuration)
+		clientErrorRule.Duration = rule.Duration(newConfig.DefaultDuration)
 	}
-	if clientConfig.ProcMonitorMethod != "" {
-		err := monitor.ReconfigureMonitorMethod(clientConfig.ProcMonitorMethod, clientConfig.Ebpf.ModulesPath)
-		if err != nil {
-			msg := fmt.Sprintf("Unable to set new process monitor (%s) method from disk: %v", clientConfig.ProcMonitorMethod, err.Msg)
-			log.Warning(msg)
-			c.SendWarningAlert(msg)
+
+	if newConfig.Internal.GCPercent > 0 && newConfig.Internal.GCPercent != c.config.Internal.GCPercent {
+		oldgcpercent := debug.SetGCPercent(newConfig.Internal.GCPercent)
+		log.Debug("[config] GC percent set to %d, previously was %d", newConfig.Internal.GCPercent, oldgcpercent)
+	} else {
+		log.Debug("[config] config.internal.gcpercent not changed")
+	}
+
+	// 1. load rules
+	c.rules.EnableChecksums(newConfig.Rules.EnableChecksums)
+	if newConfig.Rules.Path == "" || c.config.Rules.Path != newConfig.Rules.Path {
+		c.rules.Reload(newConfig.Rules.Path)
+		log.Debug("[config] reloading config.rules.path, old: <%s> new: <%s>", c.config.Rules.Path, newConfig.Rules.Path)
+	} else {
+		log.Debug("[config] config.rules.path not changed")
+	}
+
+	// 2. load proc mon method
+	reloadProc := false
+	if c.config.ProcMonitorMethod == "" ||
+		newConfig.ProcMonitorMethod != c.config.ProcMonitorMethod {
+		log.Debug("[config] reloading config.ProcMonMethod, old: %s -> new: %s", c.config.ProcMonitorMethod, newConfig.ProcMonitorMethod)
+		reloadProc = true
+	} else {
+		log.Debug("[config] config.ProcMonMethod not changed")
+	}
+
+	if reload && procmon.MethodIsEbpf() &&
+		!reflect.DeepEqual(newConfig.Ebpf, c.config.Ebpf) {
+		log.Debug("[config] reloading config.Ebpf: %v", newConfig.Ebpf)
+		reloadProc = true
+	} else {
+		log.Debug("[config] config.Ebpf.ModulesPath not changed")
+	}
+	if reloadProc {
+		err := monitor.ReconfigureMonitorMethod(newConfig.ProcMonitorMethod, newConfig.Ebpf)
+		if err != nil && err.What > monitor.NoError {
+			return err
 		}
+	} else {
+		log.Debug("[config] config.procmon not changed")
 	}
 
-	if clientConfig.Internal.GCPercent > 0 {
-		oldgcpercent := debug.SetGCPercent(clientConfig.Internal.GCPercent)
-		log.Info("GC percent set to %d, previously was %d", clientConfig.Internal.GCPercent, oldgcpercent)
+	// 3. load fw
+	reloadFw := false
+	if c.GetFirewallType() != newConfig.Firewall ||
+		newConfig.FwOptions.ConfigPath != c.config.FwOptions.ConfigPath ||
+		newConfig.FwOptions.QueueNum != c.config.FwOptions.QueueNum ||
+		newConfig.FwOptions.MonitorInterval != c.config.FwOptions.MonitorInterval {
+		log.Debug("[config] reloading config.firewall")
+		reloadFw = true
+
+		firewall.Reload(
+			newConfig.Firewall,
+			newConfig.FwOptions.ConfigPath,
+			newConfig.FwOptions.MonitorInterval,
+			newConfig.FwOptions.QueueNum,
+		)
+	} else {
+		log.Debug("[config] config.firewall not changed")
 	}
 
-	c.rules.EnableChecksums(clientConfig.Rules.EnableChecksums)
-	// TODO:
-	//c.stats.SetLimits(clientConfig.Stats)
-	//loggers.Load(clientConfig.Server.Loggers, clientConfig.Stats.Workers)
-	//stats.SetLoggers(loggers)
+	if (reloadProc || reloadFw) && newConfig.Internal.FlushConnsOnStart {
+		log.Debug("[config] flushing established connections")
+		netlink.FlushConnections()
+	} else {
+		log.Debug("[config] not flushing established connections")
+	}
 
-	return true
+	return nil
 }

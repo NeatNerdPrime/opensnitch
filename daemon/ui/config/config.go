@@ -6,15 +6,16 @@ import (
 	"io/ioutil"
 	"os"
 	"reflect"
-	"sync"
 
 	"github.com/evilsocket/opensnitch/daemon/log"
 	"github.com/evilsocket/opensnitch/daemon/log/loggers"
+	"github.com/evilsocket/opensnitch/daemon/procmon/ebpf"
 	"github.com/evilsocket/opensnitch/daemon/statistics"
 )
 
 type (
-	serverTLSOptions struct {
+	// ServerTLSOptions struct
+	ServerTLSOptions struct {
 		CACert     string `json:"CACert"`
 		ServerCert string `json:"ServerCert"`
 		ServerKey  string `json:"ServerKey"`
@@ -31,37 +32,40 @@ type (
 		// VerifyPeerCertificate bool
 	}
 
-	serverAuth struct {
+	// ServerAuth struct
+	ServerAuth struct {
 		// token?, google?, simple-tls, mutual-tls
 		Type       string           `json:"Type"`
-		TLSOptions serverTLSOptions `json:"TLSOptions"`
+		TLSOptions ServerTLSOptions `json:"TLSOptions"`
 	}
 
-	serverConfig struct {
+	// ServerConfig struct
+	ServerConfig struct {
 		Address        string                 `json:"Address"`
-		Authentication serverAuth             `json:"Authentication"`
+		Authentication ServerAuth             `json:"Authentication"`
 		LogFile        string                 `json:"LogFile"`
 		Loggers        []loggers.LoggerConfig `json:"Loggers"`
 	}
 
-	rulesOptions struct {
+	// RulesOptions struct
+	RulesOptions struct {
 		Path            string `json:"Path"`
 		EnableChecksums bool   `json:"EnableChecksums"`
 	}
 
-	fwOptions struct {
+	// FwOptions struct
+	FwOptions struct {
 		Firewall        string `json:"Firewall"`
 		ConfigPath      string `json:"ConfigPath"`
 		BypassQueue     string `json:"BypassQueue"`
 		MonitorInterval string `json:"MonitorInterval"`
+		QueueNum        uint16 `json:"QueueNum"`
 	}
 
-	ebpfOptions struct {
-		ModulesPath string `json:"ModulesPath"`
-	}
-
-	internalOptions struct {
-		GCPercent int `json:"GCPercent"`
+	// InternalOptions struct
+	InternalOptions struct {
+		GCPercent         int  `json:"GCPercent"`
+		FlushConnsOnStart bool `json:"FlushConnsOnStart"`
 	}
 )
 
@@ -72,18 +76,16 @@ type Config struct {
 	DefaultAction     string                 `json:"DefaultAction"`
 	DefaultDuration   string                 `json:"DefaultDuration"`
 	ProcMonitorMethod string                 `json:"ProcMonitorMethod"`
-	FwOptions         fwOptions              `json:"FwOptions"`
-	Ebpf              ebpfOptions            `json:"Ebpf"`
-	Server            serverConfig           `json:"Server"`
-	Rules             rulesOptions           `json:"Rules"`
+	FwOptions         FwOptions              `json:"FwOptions"`
+	Ebpf              ebpf.Config            `json:"Ebpf"`
+	Server            ServerConfig           `json:"Server"`
+	Rules             RulesOptions           `json:"Rules"`
+	Internal          InternalOptions        `json:"Internal"`
 	Stats             statistics.StatsConfig `json:"Stats"`
-	Internal          internalOptions        `json:"Internal"`
 
 	InterceptUnknown bool `json:"InterceptUnknown"`
 	LogUTC           bool `json:"LogUTC"`
 	LogMicro         bool `json:"LogMicro"`
-
-	sync.RWMutex
 }
 
 // Parse determines if the given configuration is ok.
