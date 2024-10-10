@@ -4,6 +4,7 @@ import sys
 import os
 import csv
 import io
+import json
 
 from PyQt5 import QtCore, QtGui, uic, QtWidgets
 from PyQt5.QtCore import QCoreApplication as QC
@@ -23,10 +24,12 @@ from opensnitch.customwidgets.colorizeddelegate import ColorizedDelegate
 from opensnitch.customwidgets.firewalltableview import FirewallTableModel
 from opensnitch.customwidgets.generictableview import GenericTableModel
 from opensnitch.customwidgets.addresstablemodel import AddressTableModel
+from opensnitch.customwidgets.netstattablemodel import NetstatTableModel
 from opensnitch.utils import Message, QuickHelp, AsnDB, Icons
 from opensnitch.utils.infowindow import InfoWindow
 from opensnitch.utils.xdg import xdg_current_desktop
 from opensnitch.actions import Actions
+from opensnitch.plugins import PluginBase
 from opensnitch.rules import Rule, Rules
 
 DIALOG_UI_PATH = "%s/../res/stats.ui" % os.path.dirname(sys.modules[__name__].__file__)
@@ -38,7 +41,7 @@ class StatsDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0]):
     _status_changed_trigger = QtCore.pyqtSignal(bool)
     _shown_trigger = QtCore.pyqtSignal()
     _notification_trigger = QtCore.pyqtSignal(ui_pb2.Notification)
-    _notification_callback = QtCore.pyqtSignal(ui_pb2.NotificationReply)
+    _notification_callback = QtCore.pyqtSignal(str, ui_pb2.NotificationReply)
 
     SORT_ORDER = ["ASC", "DESC"]
     LIMITS = ["LIMIT 50", "LIMIT 100", "LIMIT 200", "LIMIT 300", ""]
@@ -54,6 +57,16 @@ class StatsDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0]):
     COL_CMDLINE   = 6
     COL_RULES  = 7
     GENERAL_COL_NUM = 8
+
+    # nodes
+    COL_N_STATUS = 2
+    COL_N_HOSTNAME = 3
+    COL_N_VERSION = 4
+    COL_N_UPTIME = 5
+    COL_N_RULES = 6
+    COL_N_CONNECTIONS = 7
+    COL_N_DROPPED = 8
+    COL_N_KERNEL = 9
 
     # stats
     COL_WHAT   = 0
@@ -85,8 +98,10 @@ class StatsDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0]):
     TAB_ADDRS = 5
     TAB_PORTS = 6
     TAB_USERS = 7
-    TAB_FIREWALL = 8 # in rules tab
-    TAB_ALERTS = 9 # in rules tab
+    TAB_NETSTAT = 8
+    # these "specials" tables must be placed after the "real" tabs
+    TAB_FIREWALL = 9 # in rules tab
+    TAB_ALERTS = 10 # in rules tab
 
     # tree's top level items
     RULES_TREE_APPS  = 0
@@ -126,13 +141,10 @@ class StatsDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0]):
         TAB_ADDRS: False,
         TAB_PORTS: False,
         TAB_USERS: False,
+        TAB_NETSTAT: False,
         TAB_FIREWALL: False,
         TAB_ALERTS: False
     }
-    # restore scrollbar position when going back from a detail view
-    LAST_SCROLL_VALUE = None
-    # try to restore last selection
-    LAST_SELECTED_ITEM = ""
 
     TABLES = {
         TAB_MAIN: {
@@ -205,40 +217,6 @@ class StatsDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0]):
             "last_order_by": "2",
             "last_order_to": 0,
             "tracking_column:": COL_R_NAME
-        },
-        TAB_FIREWALL: {
-            "name": "firewall",
-            "label": None,
-            "cmd": None,
-            "cmdCleanStats": None,
-            "view": None,
-            "filterLine": None,
-            "model": None,
-            "delegate": "defaultFWDelegateConfig",
-            "display_fields": "*",
-            "header_labels": [],
-            "last_order_by": "2",
-            "last_order_to": 0,
-            "tracking_column:": COL_TIME
-        },
-        TAB_ALERTS: {
-            "name": "alerts",
-            "label": None,
-            "cmd": None,
-            "cmdCleanStats": None,
-            "view": None,
-            "filterLine": None,
-            "model": None,
-            "delegate": "defaultRulesDelegateConfig",
-            "display_fields": "time as Time, " \
-                "node as Node, " \
-                "type as Type, " \
-                "substr(what, 0, 128) as What, " \
-                "substr(body, 0, 128) as Description ",
-            "header_labels": [],
-            "last_order_by": "1",
-            "last_order_to": 0,
-            "tracking_column:": COL_TIME
         },
         TAB_HOSTS: {
             "name": "hosts",
@@ -314,6 +292,65 @@ class StatsDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0]):
             "last_order_by": "2",
             "last_order_to": 1,
             "tracking_column:": COL_TIME
+        },
+        TAB_NETSTAT: {
+            "name": "sockets",
+            "label": None,
+            "cmd": None,
+            "cmdCleanStats": None,
+            "view": None,
+            "filterLine": None,
+            "model": None,
+            "delegate": "netstatDelegateConfig",
+            "display_fields": "proc_comm as Comm," \
+                "state as State, " \
+                "src_port as SrcPort, " \
+                "src_ip as SrcIP, " \
+                "dst_ip as DstIP, " \
+                "dst_port as DstPort, " \
+                "proto as Protocol, " \
+                "uid as UID, " \
+                "family as Family, " \
+                "iface as IFace, " \
+                "'pid:' || proc_pid || ', inode: ' || inode || ', cookies: '|| cookies || ', rqueue: ' || rqueue || ', wqueue: ' || wqueue || ', expires: ' || expires || ', retrans: ' || retrans || ', timer: ' || timer as Metadata ",
+            "header_labels": [],
+            "last_order_by": "2",
+            "last_order_to": 1,
+            "tracking_column:": COL_TIME
+        },
+        TAB_FIREWALL: {
+            "name": "firewall",
+            "label": None,
+            "cmd": None,
+            "cmdCleanStats": None,
+            "view": None,
+            "filterLine": None,
+            "model": None,
+            "delegate": "defaultFWDelegateConfig",
+            "display_fields": "*",
+            "header_labels": [],
+            "last_order_by": "2",
+            "last_order_to": 0,
+            "tracking_column:": COL_TIME
+        },
+        TAB_ALERTS: {
+            "name": "alerts",
+            "label": None,
+            "cmd": None,
+            "cmdCleanStats": None,
+            "view": None,
+            "filterLine": None,
+            "model": None,
+            "delegate": "defaultRulesDelegateConfig",
+            "display_fields": "time as Time, " \
+                "node as Node, " \
+                "type as Type, " \
+                "substr(what, 0, 128) as What, " \
+                "substr(body, 0, 128) as Description ",
+            "header_labels": [],
+            "last_order_by": "1",
+            "last_order_to": 0,
+            "tracking_column:": COL_TIME
         }
     }
 
@@ -356,6 +393,12 @@ class StatsDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0]):
         self.FIREWALL_DISABLED = QC.translate("stats", "Disabled")
         self.FIREWALL_RUNNING  = QC.translate("stats", "Running")
 
+        # restore scrollbar position when going back from a detail view
+        self.LAST_SCROLL_VALUE = None
+        # try to restore last selection
+        self.LAST_SELECTED_ITEM = ""
+        self.LAST_TAB = 0
+
         self._db = db
         self._db_sqlite = self._db.get_db()
         self._db_name = dbname
@@ -367,9 +410,10 @@ class StatsDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0]):
         self._fw = Firewall().instance()
         self._rules = Rules.instance()
         self._fw.rules.rulesUpdated.connect(self._cb_fw_rules_updated)
+        self._nodes.nodesUpdated.connect(self._cb_nodes_updated)
         self._rules.updated.connect(self._cb_app_rules_updated)
         self._actions = Actions().instance()
-        self._actions.loadAll()
+        self._action_list = self._actions.getByType(PluginBase.TYPE_MAIN_DIALOG)
         self._last_update = datetime.datetime.now()
 
         # TODO: allow to display multiples dialogs
@@ -405,6 +449,8 @@ class StatsDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0]):
         self.nodeLabel.setStyleSheet('color: green;font-size:12pt; font-weight:600;')
         self.rulesSplitter.setStretchFactor(0,0)
         self.rulesSplitter.setStretchFactor(1,2)
+        self.nodesSplitter.setStretchFactor(0,0)
+        self.nodesSplitter.setStretchFactor(0,3)
         self.rulesTreePanel.resizeColumnToContents(0)
         self.rulesTreePanel.resizeColumnToContents(1)
         self.rulesTreePanel.itemExpanded.connect(self._cb_rules_tree_item_expanded)
@@ -423,7 +469,8 @@ class StatsDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0]):
         self.limitCombo.currentIndexChanged.connect(self._cb_limit_combo_changed)
         self.tabWidget.currentChanged.connect(self._cb_tab_changed)
         self.delRuleButton.clicked.connect(self._cb_del_rule_clicked)
-        self.rulesSplitter.splitterMoved.connect(self._cb_rules_splitter_moved)
+        self.rulesSplitter.splitterMoved.connect(lambda pos, index: self._cb_splitter_moved(self.TAB_RULES, pos, index))
+        self.nodesSplitter.splitterMoved.connect(lambda pos, index: self._cb_splitter_moved(self.TAB_NODES, pos, index))
         self.rulesTreePanel.itemClicked.connect(self._cb_rules_tree_item_clicked)
         self.rulesTreePanel.itemDoubleClicked.connect(self._cb_rules_tree_item_double_clicked)
         self.enableRuleCheck.clicked.connect(self._cb_enable_rule_toggled)
@@ -434,6 +481,44 @@ class StatsDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0]):
         self.helpButton.clicked.connect(self._cb_help_button_clicked)
         self.nextButton.clicked.connect(self._cb_next_button_clicked)
         self.prevButton.clicked.connect(self._cb_prev_button_clicked)
+
+
+        # TODO: move to utils/
+        self.comboNetstatProto.clear()
+        self.comboNetstatProto.addItem(QC.translate("stats", "ALL"), 0)
+        self.comboNetstatProto.addItem("TCP", 6)
+        self.comboNetstatProto.addItem("UDP", 17)
+        self.comboNetstatProto.addItem("SCTP", 132)
+        self.comboNetstatProto.addItem("DCCP", 33)
+        self.comboNetstatProto.addItem("ICMP", 1)
+        self.comboNetstatProto.addItem("ICMPv6", 58)
+        self.comboNetstatProto.addItem("IGMP", 2)
+
+        # These are sockets states. Conntrack uses a different enum.
+        self.comboNetstatStates.clear()
+        self.comboNetstatStates.addItem(QC.translate("stats", "ALL"), 0)
+        self.comboNetstatStates.addItem("Established", 1)
+        self.comboNetstatStates.addItem("TCP_SYN_SENT", 2)
+        self.comboNetstatStates.addItem("TCP_SYN_RECV", 3)
+        self.comboNetstatStates.addItem("TCP_FIN_WAIT1", 4)
+        self.comboNetstatStates.addItem("TCP_FIN_WAIT2", 5)
+        self.comboNetstatStates.addItem("TCP_TIME_WAIT", 6)
+        self.comboNetstatStates.addItem("CLOSE", 7)
+        self.comboNetstatStates.addItem("TCP_CLOSE_WAIT", 8)
+        self.comboNetstatStates.addItem("TCP_LAST_ACK", 9)
+        self.comboNetstatStates.addItem("LISTEN", 10)
+        self.comboNetstatStates.addItem("TCP_CLOSING", 11)
+        self.comboNetstatStates.addItem("TCP_NEW_SYN_RECV", 12)
+
+        self.comboNetstatFamily.clear()
+        self.comboNetstatFamily.addItem(QC.translate("stats", "ALL"), 0)
+        self.comboNetstatFamily.addItem("AF_INET", 2)
+        self.comboNetstatFamily.addItem("AF_INET6", 10)
+        self.comboNetstatInterval.currentIndexChanged.connect(lambda index: self._cb_combo_netstat_changed(0, index))
+        self.comboNetstatNodes.activated.connect(lambda index: self._cb_combo_netstat_changed(1, index))
+        self.comboNetstatProto.currentIndexChanged.connect(lambda index: self._cb_combo_netstat_changed(2, index))
+        self.comboNetstatFamily.currentIndexChanged.connect(lambda index: self._cb_combo_netstat_changed(3, index))
+        self.comboNetstatStates.currentIndexChanged.connect(lambda index: self._cb_combo_netstat_changed(4, index))
 
         self.enableRuleCheck.setVisible(False)
         self.delRuleButton.setVisible(False)
@@ -497,6 +582,20 @@ class StatsDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0]):
         self.TABLES[self.TAB_ADDRS]['header_labels'] = stats_headers
         self.TABLES[self.TAB_PORTS]['header_labels'] = stats_headers
         self.TABLES[self.TAB_USERS]['header_labels'] = stats_headers
+
+        self.LAST_NETSTAT_NODE = None
+        self.TABLES[self.TAB_NETSTAT]['header_labels'] = [
+            "Comm",
+            QC.translate("stats", "State", "This is a word, without spaces and symbols.").replace(" ", ""),
+            QC.translate("stats", "SrcPort", "This is a word, without spaces and symbols.").replace(" ", ""),
+            QC.translate("stats", "SrcIP", "This is a word, without spaces and symbols.").replace(" ", ""),
+            QC.translate("stats", "DstIP", "This is a word, without spaces and symbols.").replace(" ", ""),
+            QC.translate("stats", "DstPort", "This is a word, without spaces and symbols.").replace(" ", ""),
+            QC.translate("stats", "UID", "This is a word, without spaces and symbols.").replace(" ", ""),
+            QC.translate("stats", "Family", "This is a word, without spaces and symbols.").replace(" ", ""),
+            QC.translate("stats", "Iface", "This is a word, without spaces and symbols.").replace(" ", ""),
+            QC.translate("stats", "Metadata", "This is a word, without spaces and symbols.").replace(" ", "")
+        ]
 
         self.TABLES[self.TAB_MAIN]['view'] = self._setup_table(QtWidgets.QTableView, self.eventsTable, "connections",
                 self.TABLES[self.TAB_MAIN]['display_fields'],
@@ -590,6 +689,16 @@ class StatsDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0]):
                 order_by="2",
                 limit=self._get_limit()
                 )
+        self.TABLES[self.TAB_NETSTAT]['view'] = self._setup_table(QtWidgets.QTableView,
+                self.netstatTable, "sockets",
+                self.TABLES[self.TAB_NETSTAT]['display_fields'],
+                model=NetstatTableModel("sockets", self.TABLES[self.TAB_NETSTAT]['header_labels']),
+                verticalScrollBar=self.netstatScrollBar,
+                #resize_cols=(),
+                delegate=self.TABLES[self.TAB_NETSTAT]['delegate'],
+                order_by="2",
+                limit=self._get_limit()
+                )
 
         self.TABLES[self.TAB_NODES]['label'] = self.nodesLabel
         self.TABLES[self.TAB_RULES]['label'] = self.ruleLabel
@@ -598,6 +707,7 @@ class StatsDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0]):
         self.TABLES[self.TAB_ADDRS]['label'] = self.addrsLabel
         self.TABLES[self.TAB_PORTS]['label'] = self.portsLabel
         self.TABLES[self.TAB_USERS]['label'] = self.usersLabel
+        self.TABLES[self.TAB_NETSTAT]['label'] = self.netstatLabel
 
         self.TABLES[self.TAB_NODES]['cmd'] = self.cmdNodesBack
         self.TABLES[self.TAB_RULES]['cmd'] = self.cmdRulesBack
@@ -606,6 +716,7 @@ class StatsDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0]):
         self.TABLES[self.TAB_ADDRS]['cmd'] = self.cmdAddrsBack
         self.TABLES[self.TAB_PORTS]['cmd'] = self.cmdPortsBack
         self.TABLES[self.TAB_USERS]['cmd'] = self.cmdUsersBack
+        self.TABLES[self.TAB_NETSTAT]['cmd'] = self.cmdNetstatBack
 
         self.TABLES[self.TAB_MAIN]['cmdCleanStats'] = self.cmdCleanSql
         self.TABLES[self.TAB_NODES]['cmdCleanStats'] = self.cmdCleanSql
@@ -615,6 +726,7 @@ class StatsDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0]):
         self.TABLES[self.TAB_ADDRS]['cmdCleanStats'] = self.cmdCleanSql
         self.TABLES[self.TAB_PORTS]['cmdCleanStats'] = self.cmdCleanSql
         self.TABLES[self.TAB_USERS]['cmdCleanStats'] = self.cmdCleanSql
+        self.TABLES[self.TAB_NETSTAT]['cmdCleanStats'] = self.cmdCleanSql
         # the rules clean button is only for a particular rule, not all.
         self.TABLES[self.TAB_MAIN]['cmdCleanStats'].clicked.connect(lambda: self._cb_clean_sql_clicked(self.TAB_MAIN))
 
@@ -643,6 +755,7 @@ class StatsDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0]):
                 self.TABLES[idx]['label'].setStyleSheet('color: blue; font-size:9pt; font-weight:600;')
                 self.TABLES[idx]['label'].setVisible(False)
             self.TABLES[idx]['view'].doubleClicked.connect(self._cb_table_double_clicked)
+            self.TABLES[idx]['view'].selectionModel().selectionChanged.connect(self._cb_table_selection_changed)
             self.TABLES[idx]['view'].installEventFilter(self)
 
         self.TABLES[self.TAB_FIREWALL]['view'].rowsReordered.connect(self._cb_fw_table_rows_reordered)
@@ -657,7 +770,8 @@ class StatsDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0]):
             self.TABLES[self.TAB_PROCS]['view'],
             self.TABLES[self.TAB_ADDRS]['view'],
             self.TABLES[self.TAB_PORTS]['view'],
-            self.TABLES[self.TAB_USERS]['view']
+            self.TABLES[self.TAB_USERS]['view'],
+            self.TABLES[self.TAB_NETSTAT]['view']
         )
         self._file_names = ( \
             'events.csv',
@@ -667,7 +781,8 @@ class StatsDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0]):
             'procs.csv',
             'addrs.csv',
             'ports.csv',
-            'users.csv'
+            'users.csv',
+            'netstat.csv'
         )
 
         self.iconStart = Icons.new(self, "media-playback-start")
@@ -682,6 +797,7 @@ class StatsDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0]):
         )
         self.fwTreeEdit.clicked.connect(self._cb_tree_edit_firewall_clicked)
         self._configure_buttons_icons()
+        self._configure_plugins()
 
     #Sometimes a maximized window which had been minimized earlier won't unminimize
     #To workaround, we explicitely maximize such windows when unminimizing happens
@@ -723,6 +839,15 @@ class StatsDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0]):
                     self._refresh_active_table()
                 return True
         return super(StatsDialog, self).eventFilter(source, event)
+
+    def _configure_plugins(self):
+        for conf in self._action_list:
+            action = self._action_list[conf]
+            for name in action['actions']:
+                try:
+                    action['actions'][name].configure(self)
+                except Exception as e:
+                    print("stats._configure_plugins() exception:", name, "-", e)
 
     def _configure_buttons_icons(self):
         if QtGui.QIcon.hasThemeIcon("document-new"):
@@ -798,14 +923,29 @@ class StatsDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0]):
             elif len(rulesSizes) > 0:
                 self.comboRulesFilter.setVisible(rulesSizes[0] == 0)
         else:
+            # default position when the user hasn't moved it.
             w = self.rulesSplitter.width()
-            self.rulesSplitter.setSizes([int(w/3), int(w/2)])
+            self.rulesSplitter.setSizes([int(w/2), int(w/4)])
+
+        nodes_splitter_pos = self._cfg.getSettings(Config.STATS_NODES_SPLITTER_POS)
+        if type(nodes_splitter_pos) == QtCore.QByteArray:
+            self.nodesSplitter.restoreState(nodes_splitter_pos)
+            nodesSizes = self.nodesSplitter.sizes()
+            self.nodesSplitter.setVisible(not self.IN_DETAIL_VIEW[self.TAB_NODES] and nodesSizes[0] > 0)
+            #elif len(rulesSizes) > 0:
+            #    self.comboRulesFilter.setVisible(rulesSizes[0] == 0)
+        else:
+            w = self.nodesSplitter.width()
+            self.nodesSplitter.setSizes([int(w/2), int(w/3)])
+
+        self._configure_netstat_combos()
 
         self._restore_details_view_columns(self.eventsTable.horizontalHeader(), Config.STATS_GENERAL_COL_STATE)
         self._restore_details_view_columns(self.nodesTable.horizontalHeader(), Config.STATS_NODES_COL_STATE)
         self._restore_details_view_columns(self.rulesTable.horizontalHeader(), Config.STATS_RULES_COL_STATE)
         self._restore_details_view_columns(self.fwTable.horizontalHeader(), Config.STATS_FW_COL_STATE)
         self._restore_details_view_columns(self.alertsTable.horizontalHeader(), Config.STATS_ALERTS_COL_STATE)
+        self._restore_details_view_columns(self.netstatTable.horizontalHeader(), Config.STATS_NETSTAT_COL_STATE)
 
         rulesTreeNodes_expanded = self._cfg.getBool(Config.STATS_RULES_TREE_EXPANDED_1)
         if rulesTreeNodes_expanded != None:
@@ -837,6 +977,8 @@ class StatsDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0]):
         self._cfg.setSettings(Config.STATS_FW_COL_STATE, fwHeader.saveState())
         alertsHeader = self.alertsTable.horizontalHeader()
         self._cfg.setSettings(Config.STATS_ALERTS_COL_STATE, alertsHeader.saveState())
+        netstatHeader = self.netstatTable.horizontalHeader()
+        self._cfg.setSettings(Config.STATS_NETSTAT_COL_STATE, netstatHeader.saveState())
 
         rules_tree_apps = self._get_rulesTree_item(self.RULES_TREE_APPS)
         if rules_tree_apps != None:
@@ -891,6 +1033,23 @@ class StatsDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0]):
             stream = io.StringIO()
             csv.writer(stream, delimiter=',').writerows(selection)
             QtWidgets.qApp.clipboard().setText(stream.getvalue())
+
+    def _configure_netstat_combos(self):
+        self.comboNetstatStates.blockSignals(True);
+        self.comboNetstatStates.setCurrentIndex(
+            self._cfg.getInt(Config.STATS_NETSTAT_FILTER_STATE, 0)
+        )
+        self.comboNetstatStates.blockSignals(False);
+        self.comboNetstatFamily.blockSignals(True);
+        self.comboNetstatFamily.setCurrentIndex(
+            self._cfg.getInt(Config.STATS_NETSTAT_FILTER_FAMILY, 0)
+        )
+        self.comboNetstatFamily.blockSignals(False);
+        self.comboNetstatProto.blockSignals(True);
+        self.comboNetstatProto.setCurrentIndex(
+            self._cfg.getInt(Config.STATS_NETSTAT_FILTER_PROTO, 0)
+        )
+        self.comboNetstatProto.blockSignals(False);
 
     def _configure_events_contextual_menu(self, pos):
         try:
@@ -1429,6 +1588,21 @@ class StatsDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0]):
     def _cb_app_rules_updated(self, what):
         self._refresh_active_table()
 
+    def _cb_nodes_updated(self, count):
+        prevNode = self.comboNetstatNodes.currentIndex()
+        self.comboNetstatNodes.blockSignals(True);
+        self.comboNetstatNodes.clear()
+        for node in self._nodes.get_nodes():
+            self.comboNetstatNodes.addItem(node)
+
+        if prevNode == -1:
+            prevNode = 0
+        self.comboNetstatNodes.setCurrentIndex(prevNode)
+        if count == 0:
+            self.netstatLabel.setText("")
+            self.comboNetstatInterval.setCurrentIndex(0)
+        self.comboNetstatNodes.blockSignals(False);
+
     @QtCore.pyqtSlot(str)
     def _cb_fw_table_rows_reordered(self, node_addr):
         node = self._nodes.get_node(node_addr)
@@ -1457,18 +1631,33 @@ class StatsDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0]):
 
         self._proc_details_dialog.monitor(pids)
 
-    @QtCore.pyqtSlot(ui_pb2.NotificationReply)
-    def _cb_notification_callback(self, reply):
+    @QtCore.pyqtSlot(str, ui_pb2.NotificationReply)
+    def _cb_notification_callback(self, node_addr, reply):
         if reply.id in self._notifications_sent:
-            if reply.code == ui_pb2.ERROR:
+            noti = self._notifications_sent[reply.id]
+            if noti.type == ui_pb2.TASK_START and reply.code != ui_pb2.ERROR:
+                noti_data = json.loads(noti.data)
+                if noti_data['name'] == "node-monitor":
+                    self._update_node_info(reply.data)
+                elif noti_data['name'] == "sockets-monitor":
+                    self._update_netstat_table(node_addr, reply.data)
+                else:
+                    print("_cb_notification_callback, unknown task reply?", noti_data)
+                return
+            elif noti.type == ui_pb2.TASK_START and reply.code == ui_pb2.ERROR:
+                self.netstatLabel.setText("error starting netstat table: {0}".format(reply.data))
+            elif reply.code == ui_pb2.ERROR:
                 Message.ok(
                     QC.translate("stats", "Error:"),
                     "{0}".format(reply.data),
                     QtWidgets.QMessageBox.Warning)
+            else:
+                print("_cb_notification_callback, unknown reply:", reply)
 
             del self._notifications_sent[reply.id]
 
         else:
+            print("_cb_notification_callback, reply not in the list:", reply)
             Message.ok(
                 QC.translate("stats", "Warning:"),
                 "{0}".format(reply.data),
@@ -1477,9 +1666,19 @@ class StatsDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0]):
     def _cb_tab_changed(self, index):
         self.comboAction.setVisible(index == self.TAB_MAIN)
 
+        if index != self.TAB_NETSTAT and self.LAST_TAB == self.TAB_NETSTAT:
+            self._unmonitor_node_netstat(self.LAST_SELECTED_ITEM)
+            self.comboNetstatNodes.setCurrentIndex(0)
+
+        if self.LAST_TAB == self.TAB_NODES and self.LAST_SELECTED_ITEM != "":
+            self._unmonitor_deselected_node(self.LAST_SELECTED_ITEM)
+
         self.TABLES[index]['cmdCleanStats'].setVisible(True)
         if index == self.TAB_MAIN:
             self._set_events_query()
+        elif index == self.TAB_NETSTAT:
+            self.IN_DETAIL_VIEW[index] = True
+            self._monitor_node_netstat()
         else:
             if index == self.TAB_RULES:
                 # display the clean buton only if not in detail view
@@ -1493,6 +1692,7 @@ class StatsDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0]):
             elif index == self.TAB_NODES:
                 self.TABLES[index]['cmdCleanStats'].setVisible( self.IN_DETAIL_VIEW[index] )
 
+        self.LAST_TAB = index
         self._refresh_active_table()
 
     def _cb_table_context_menu(self, pos):
@@ -1567,6 +1767,21 @@ class StatsDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0]):
 
         if qstr != None:
             self.setQuery(model, qstr)
+
+    def _cb_combo_netstat_changed(self, combo, idx):
+        refreshIndex = self.comboNetstatInterval.currentIndex()
+        self._unmonitor_node_netstat(self.LAST_NETSTAT_NODE)
+        if refreshIndex > 0:
+            self._monitor_node_netstat()
+
+        if combo == 2:
+            self._cfg.setSettings(Config.STATS_NETSTAT_FILTER_PROTO, self.comboNetstatProto.currentIndex())
+        elif combo == 3:
+            self._cfg.setSettings(Config.STATS_NETSTAT_FILTER_FAMILY, self.comboNetstatFamily.currentIndex())
+        elif combo == 4:
+            self._cfg.setSettings(Config.STATS_NETSTAT_FILTER_STATE, self.comboNetstatStates.currentIndex())
+
+        self.LAST_NETSTAT_NODE = self.comboNetstatNodes.currentText()
 
     def _cb_limit_combo_changed(self, idx):
         if self.tabWidget.currentIndex() == self.TAB_MAIN:
@@ -1674,6 +1889,27 @@ class StatsDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0]):
             self.TABLES[cur_idx]['view'].horizontalHeader(),
             "{0}{1}".format(Config.STATS_VIEW_DETAILS_COL_STATE, cur_idx)
         )
+
+    def _cb_table_selection_changed(self, selected, deselected):
+        cur_idx = self.tabWidget.currentIndex()
+        if cur_idx == self.TAB_NODES:
+            if not deselected.isEmpty():
+                self.LAST_SELECTED_ITEM = ""
+                last_addr = deselected.indexes()[self.COL_NODE].data()
+                self._unmonitor_deselected_node(last_addr)
+
+            if not selected.isEmpty():
+                node_addr = selected.indexes()[self.COL_NODE].data()
+                if node_addr == self.LAST_SELECTED_ITEM:
+                    return
+                self.LAST_SELECTED_ITEM = node_addr
+                self._monitor_selected_node(
+                    node_addr,
+                    selected.indexes()[self.COL_N_UPTIME].data(),
+                    selected.indexes()[self.COL_N_HOSTNAME].data(),
+                    selected.indexes()[self.COL_N_VERSION].data(),
+                    selected.indexes()[self.COL_N_KERNEL].data()
+                )
 
     def _cb_table_double_clicked(self, row):
         cur_idx = self.tabWidget.currentIndex()
@@ -1820,9 +2056,15 @@ class StatsDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0]):
 
         self._set_rules_filter(parent_row, item_row, item.text(0), node_addr, fw_table)
 
-    def _cb_rules_splitter_moved(self, pos, index):
-        self.comboRulesFilter.setVisible(pos == 0)
-        self._cfg.setSettings(Config.STATS_RULES_SPLITTER_POS, self.rulesSplitter.saveState())
+    def _cb_splitter_moved(self, tab, pos, index):
+        if tab == self.TAB_RULES:
+            self.comboRulesFilter.setVisible(pos == 0)
+            self._cfg.setSettings(Config.STATS_RULES_SPLITTER_POS, self.rulesSplitter.saveState())
+        elif tab == self.TAB_NODES:
+            #w = self.nodesSplitter.width()
+            #if pos >= w-2:
+            #    self._unmonitor_deselected_node()
+            self._cfg.setSettings(Config.STATS_NODES_SPLITTER_POS, self.nodesSplitter.saveState())
 
     def _cb_start_clicked(self):
         if self.daemon_connected == False:
@@ -2189,7 +2431,7 @@ class StatsDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0]):
             col = self.TAB_RULES
 
         #self.TABLES[cur_idx]['view'].selectItem(self.LAST_SELECTED_ITEM, col)
-        self.LAST_SELECTED_ITEM = ""
+        #self.LAST_SELECTED_ITEM = ""
 
     def _restore_scroll_value(self):
         if self.LAST_SCROLL_VALUE != None:
@@ -2292,6 +2534,8 @@ class StatsDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0]):
         self.setQuery(model, qstr)
 
     def _set_nodes_query(self, data):
+        if data != self.LAST_SELECTED_ITEM:
+            self._monitor_selected_node(data, "", "", "", "")
 
         model = self._get_active_table().model()
         self.setQuery(model, "SELECT " \
@@ -2347,6 +2591,286 @@ class StatsDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0]):
             qstr += " GROUP BY" + base_query[1]
 
         return qstr
+
+    def _reset_node_info(self, status=""):
+        # value 0 is continuous progress
+        self.nodeRAMProgress.setMaximum(1)
+        self.nodeRAMProgress.setValue(0)
+        self.labelNodeProcs.setText("")
+        self.labelNodeLoadAvg.setText("")
+        self.labelNodeUptime.setText("")
+        self.labelNodeSwap.setText("")
+        self.labelNodeRAM.setText(status)
+
+    def _monitor_selected_node(self, node_addr, col_uptime, col_hostname, col_version, col_kernel):
+        # TODO:
+        #  - create a tasks package, to centralize/normalize tasks' names and
+        #  config
+        if not self._nodes.is_connected(node_addr):
+            self._reset_node_info(QC.translate("stats", "node not connected"))
+        else:
+            noti = ui_pb2.Notification(
+                clientName="",
+                serverName="",
+                type=ui_pb2.TASK_START,
+                data='{"name": "node-monitor", "data": {"node": "%s", "interval": "5s"}}' % node_addr,
+                rules=[])
+            nid = self._nodes.send_notification(
+                node_addr, noti, self._notification_callback
+            )
+            if nid != None:
+                self._notifications_sent[nid] = noti
+
+            self.nodeRAMProgress.setMaximum(0)
+            self.nodeSwapProgress.setMaximum(0)
+            self.labelNodeName.setText(QC.translate("stats", "loading node information..."))
+            self.labelNodeName.setText("<h3>{0}</h3>".format(col_hostname))
+            self.labelNodeDetails.setText(
+                QC.translate(
+                    "stats",
+                    "<p><strong>daemon uptime:</strong> {0}</p>".format(col_uptime) + \
+                    "<p><strong>Version:</strong> {0}</p>".format(col_version) + \
+                    "<p><strong>Kernel:</strong> {0}</p>".format(col_kernel)
+                )
+            )
+
+    def _unmonitor_deselected_node(self, last_addr):
+        if not self._nodes.is_connected(last_addr):
+            self._reset_node_info(QC.translate("stats", "node not connected"))
+        else:
+            noti = ui_pb2.Notification(
+                clientName="",
+                serverName="",
+                type=ui_pb2.TASK_STOP,
+                data='{"name": "node-monitor", "data": {"node": "%s", "interval": "5s"}}' % last_addr,
+                rules=[])
+            nid = self._nodes.send_notification(
+                last_addr, noti, self._notification_callback
+            )
+            if nid != None:
+                self._notifications_sent[nid] = noti
+            self.labelNodeDetails.setText("")
+            print("taskStop, prev node:", last_addr, "nid:", nid)
+
+            # XXX: would be useful to leave latest data?
+            #self._reset_node_info()
+
+    def _monitor_node_netstat(self):
+        # TODO:
+        #  - create a tasks package, to centralize/normalize tasks' names and
+        #  config
+        self.netstatLabel.show()
+
+        node_addr = self.comboNetstatNodes.currentText()
+        if node_addr == "":
+            print("monitor_netstat_node: no nodes")
+            self.netstatLabel.setText("")
+            return
+        if not self._nodes.is_connected(node_addr):
+            print("monitor_node_netstat, node not connected:", node_addr)
+            self.netstatLabel.setText("{0} node is not connected".format(node_addr))
+            return
+
+        refreshIndex = self.comboNetstatInterval.currentIndex()
+        if refreshIndex == 0:
+            self._unmonitor_node_netstat(node_addr)
+            return
+
+        refreshInterval = self.comboNetstatInterval.currentText()
+        proto = self.comboNetstatProto.currentIndex()
+        family = self.comboNetstatFamily.currentIndex()
+        state = self.comboNetstatStates.currentIndex()
+        config = '{"name": "sockets-monitor", "data": {"interval": "%s", "state": %d, "proto": %d, "family": %d}}' % (
+            refreshInterval,
+            int(self.comboNetstatStates.itemData(state)),
+            int(self.comboNetstatProto.itemData(proto)),
+            int(self.comboNetstatFamily.itemData(family))
+        )
+
+        self.netstatLabel.setText(QC.translate("stats", "loading in {0}...".format(refreshInterval)))
+
+        noti = ui_pb2.Notification(
+            clientName="",
+            serverName="",
+            type=ui_pb2.TASK_START,
+            data=config,
+            rules=[])
+        nid = self._nodes.send_notification(
+            node_addr, noti, self._notification_callback
+        )
+        if nid != None:
+            self._notifications_sent[nid] = noti
+
+        self.LAST_SELECTED_ITEM = node_addr
+
+    def _unmonitor_node_netstat(self, node_addr):
+        self.netstatLabel.hide()
+        self.netstatLabel.setText("")
+        if node_addr == "":
+            print("unmonitor_netstat_node: no nodes")
+            return
+
+        if not self._nodes.is_connected(node_addr):
+            print("unmonitor_node_netstat, node not connected:", node_addr)
+        else:
+            noti = ui_pb2.Notification(
+                clientName="",
+                serverName="",
+                type=ui_pb2.TASK_STOP,
+                data='{"name": "sockets-monitor", "data": {}}',
+                rules=[])
+            nid = self._nodes.send_notification(
+                node_addr, noti, self._notification_callback
+            )
+            if nid != None:
+                self._notifications_sent[nid] = noti
+
+    def _update_netstat_table(self, node_addr, data):
+        netstat = json.loads(data)
+        fields = []
+        values = []
+        cols = "(last_seen, node, src_port, src_ip, dst_ip, dst_port, proto, uid, inode, iface, family, state, cookies, rqueue, wqueue, expires, retrans, timer, proc_path, proc_comm, proc_pid)"
+        try:
+            now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            # TODO: make this optional
+            self._db.clean(self.TABLES[self.TAB_NETSTAT]['name'])
+            self._db.transaction()
+            for k in netstat['Table']:
+                if k == None:
+                    continue
+                sck = k['Socket']
+                iface = k['Socket']['ID']['Interface']
+                if k['Iface'] != "":
+                    iface = k['Iface']
+                proc_comm = ""
+                proc_path = ""
+                proc_pid = ""
+                if k['PID'] != -1 and str(k['PID']) in netstat['Processes'].keys():
+                    proc_pid = str(k['PID'])
+                    proc_path = netstat['Processes'][proc_pid]['Path']
+                    proc_comm = netstat['Processes'][proc_pid]['Comm']
+                self._db.insert(
+                    self.TABLES[self.TAB_NETSTAT]['name'],
+                    cols,
+                    (
+                        now,
+                        node_addr,
+                        k['Socket']['ID']['SourcePort'],
+                        k['Socket']['ID']['Source'],
+                        k['Socket']['ID']['Destination'],
+                        k['Socket']['ID']['DestinationPort'],
+                        k['Proto'],
+                        k['Socket']['UID'],
+                        k['Socket']['INode'],
+                        iface,
+                        k['Socket']['Family'],
+                        k['Socket']['State'],
+                        str(k['Socket']['ID']['Cookie']),
+                        k['Socket']['RQueue'],
+                        k['Socket']['WQueue'],
+                        k['Socket']['Expires'],
+                        k['Socket']['Retrans'],
+                        k['Socket']['Timer'],
+                        proc_path,
+                        proc_comm,
+                        proc_pid
+                    )
+                )
+            self._db.commit()
+            self.netstatLabel.setText(QC.translate("stats", "refreshing..."))
+            self._refresh_active_table()
+        except Exception as e:
+            print("_update_netstat_table exception:", e)
+            print(data)
+            self.netstatLabel.setText("error loading netstat table")
+            self.netstatLabel.setText(QC.translate("stats", "error loading: {0}".format(repr(e))))
+
+# create plugins and actions before dialogs
+
+    def _update_node_info(self, data):
+        try:
+            # TODO: move to .utils
+            def formatUptime(uptime):
+                hours = uptime / 3600
+                minutes = uptime % 3600 / 60
+                #seconds = uptime % 60
+                days = (uptime / 1440) / 60
+                months = 0
+                years = 0
+                if days > 0:
+                    hours = hours % 24
+                    minutes = (uptime % 3600) / 60
+
+                if days > 0:
+                    uptime = "{0:.0f} days {1:.0f}h {2:.0f}m".format(days, hours, minutes)
+                else:
+                    uptime = "{0:.0f}h {1:.0f}m".format(hours, minutes)
+
+                return QC.translate(
+                    "stats",
+                    "<strong>System uptime:</strong> %s" % uptime
+                )
+
+            # TODO: move to .utils
+            def bytes2units(value):
+                units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
+                idx = 0
+                while value / 1024 > 0:
+                    value = value / 1024
+                    idx+=1
+                    if value < 1024:
+                        break
+
+                return "{0:.0f} {1}".format(value, units [idx])
+
+            node_data = json.loads(data)
+            load1 = node_data['Loads'][0] / 100000
+            totalRam = node_data['Totalram']
+            totalSwap = node_data['Totalswap']
+            freeRam = totalRam - node_data['Freeram']
+            freeSwap = totalSwap - node_data['Freeswap']
+            self.nodeRAMProgress.setMaximum(int(totalRam/1000))
+            self.nodeRAMProgress.setValue(int(freeRam/1000))
+            self.nodeRAMProgress.setFormat("%p%")
+            self.nodeSwapProgress.setMaximum(int(totalSwap/1000))
+            self.nodeSwapProgress.setFormat("%p%")
+            self.nodeSwapProgress.setValue(int(freeSwap/1000))
+
+            # if any of these values is 0, set max progressbar value to 1, to
+            # avoid the "busy" effect:
+            # https://doc.qt.io/qtforpython-5/PySide2/QtWidgets/QProgressBar.html#detailed-description
+            if self.nodeRAMProgress.value() == 0:
+                self.nodeRAMProgress.setMaximum(1)
+            if self.nodeSwapProgress.value() == 0:
+                self.nodeSwapProgress.setMaximum(1)
+
+            ram = bytes2units(totalRam)
+            free = bytes2units(node_data['Freeram'])
+            swap = bytes2units(totalSwap)
+            freeSwap = bytes2units(node_data['Freeswap'])
+
+            self.labelNodeRAM.setText("<strong>RAM:</strong> {0} <strong>Free:</strong> {1}".format(ram, free))
+            self.labelNodeSwap.setText("<strong>Swap:</strong> {0} <strong>Free:</strong> {1}".format(swap, freeSwap))
+            self.labelNodeProcs.setText(
+                QC.translate("stats", "<strong>Processes:</strong> {0}".format(node_data['Procs']))
+            )
+            self.nodeRAMProgress.setFormat("%p%")
+            self.nodeSwapProgress.setFormat("%p%")
+            self.labelNodeLoadAvg.setText(
+                QC.translate(
+                    "stats",
+                    "<strong>Load avg:</strong> {0:.2f}, {1:.2f}, {2:.2f}".format(
+                        node_data['Loads'][0] / 100000,
+                        node_data['Loads'][1] / 100000,
+                        node_data['Loads'][2] / 100000
+                    )
+                )
+
+            )
+            self.labelNodeUptime.setText(formatUptime(node_data['Uptime']))
+        except Exception as e:
+            print("exception parsing taskStart data:", e, data)
+        # TODO: update nodes tab
 
     def _update_nodes_interception_status(self, show=True, disable=False):
         addr = self.TABLES[self.TAB_NODES]['label'].text()
@@ -2846,7 +3370,20 @@ class StatsDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0]):
                             values.append(table.model().index(row, col).data())
                         w.writerow(values)
 
-    def _setup_table(self, widget, tableWidget, table_name, fields="*", group_by="", order_by="2", sort_direction=SORT_ORDER[1], limit="", resize_cols=(), model=None, delegate=None, verticalScrollBar=None, tracking_column=COL_TIME):
+    def _setup_table(self,
+                     widget,
+                     tableWidget,
+                     table_name,
+                     fields="*",
+                     group_by="",
+                     order_by="2",
+                     sort_direction=SORT_ORDER[1],
+                     limit="",
+                     resize_cols=(),
+                     model=None,
+                     delegate=None,
+                     verticalScrollBar=None,
+                     tracking_column=COL_TIME):
         tableWidget.setSortingEnabled(True)
         if model == None:
             model = self._db.get_new_qsql_model()
@@ -2860,6 +3397,7 @@ class StatsDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0]):
         tableWidget.setModel(model)
 
         if delegate != None:
+            # configure the personalized delegate from actions, if any
             action = self._actions.get(delegate)
             if action != None:
                 tableWidget.setItemDelegate(ColorizedDelegate(tableWidget, actions=action))

@@ -160,7 +160,7 @@ class Nodes(QObject):
     def get_node(self, addr):
         try:
             return self._nodes[addr]
-        except Exception as e:
+        except:
             return None
 
     def get_nodes(self):
@@ -194,6 +194,13 @@ class Nodes(QObject):
         except:
             print(self.LOG_TAG, "get_addr() error getting addr:", peer)
             return peer
+
+    def is_connected(self, addr):
+        try:
+            nd = self.get_node(addr)
+            return nd != None or (nd in self._nodes and self._nodes[nd]['online'] == True)
+        except:
+            return None
 
     def is_local(self, addr):
         if addr.startswith("unix"):
@@ -269,6 +276,7 @@ class Nodes(QObject):
                 # FIXME: the reply is sent before we return the notification id
                 if callback_signal != None:
                     callback_signal.emit(
+                        addr,
                         ui_pb2.NotificationReply(
                             id=notification.id,
                             code=ui_pb2.ERROR,
@@ -287,6 +295,7 @@ class Nodes(QObject):
             print(self.LOG_TAG + " exception sending notification: ", e, addr, notification)
             if callback_signal != None:
                 callback_signal.emit(
+                    addr,
                     ui_pb2.NotificationReply(
                         id=notification.id,
                         code=ui_pb2.ERROR,
@@ -329,12 +338,12 @@ class Nodes(QObject):
                 return
 
             if self._notifications_sent[reply.id]['callback'] != None:
-                self._notifications_sent[reply.id]['callback'].emit(reply)
+                self._notifications_sent[reply.id]['callback'].emit(addr, reply)
 
             # delete only one-time notifications
             # we need the ID of streaming notifications from the server
             # (monitor_process for example) to keep track of the data sent to us.
-            if self._notifications_sent[reply.id]['type'] != ui_pb2.MONITOR_PROCESS:
+            if self._notifications_sent[reply.id]['type'] != ui_pb2.TASK_START:
                 del self._notifications_sent[reply.id]
         except Exception as e:
             print(self.LOG_TAG, "notification exception:", e)

@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import re
 
 from PyQt5 import QtCore, QtGui, uic, QtWidgets
 
@@ -8,6 +9,8 @@ from opensnitch import ui_pb2
 from opensnitch.nodes import Nodes
 from opensnitch.desktop_parser import LinuxDesktopParser
 from opensnitch.utils import Message, Icons
+from opensnitch.actions import Actions
+from opensnitch.plugins import PluginBase
 from opensnitch.config import Config
 
 DIALOG_UI_PATH = "%s/../res/process_details.ui" % os.path.dirname(sys.modules[__name__].__file__)
@@ -15,7 +18,7 @@ class ProcessDetailsDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0])
 
     LOG_TAG = "[ProcessDetails]: "
 
-    _notification_callback = QtCore.pyqtSignal(ui_pb2.NotificationReply)
+    _notification_callback = QtCore.pyqtSignal(str, ui_pb2.NotificationReply)
 
     TAB_STATUS          = 0
     TAB_DESCRIPTORS     = 1
@@ -51,6 +54,8 @@ class ProcessDetailsDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0])
                 }
             }
 
+    SOCKET_REGEX = "(socket.*:.*state.*)"
+
     def __init__(self, parent=None, appicon=None):
         super(ProcessDetailsDialog, self).__init__(parent)
         QtWidgets.QDialog.__init__(self, parent, QtCore.Qt.WindowStaysOnTopHint)
@@ -63,10 +68,15 @@ class ProcessDetailsDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0])
         self._apps_parser = LinuxDesktopParser()
         self._nodes = Nodes.instance()
         self._notification_callback.connect(self._cb_notification_callback)
+        self._actions = Actions.instance()
+        self._action_list = self._actions.getByType(PluginBase.TYPE_PROC_DIALOG)
+        self._configure_plugins()
 
         self._nid = None
         self._pid = ""
         self._notifications_sent = {}
+
+        self._socketsRE = re.compile(self.SOCKET_REGEX)
 
         self.cmdClose.clicked.connect(self._cb_close_clicked)
         self.cmdAction.clicked.connect(self._cb_action_clicked)
@@ -92,8 +102,17 @@ class ProcessDetailsDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0])
         self.iconStart = Icons.new(self, "media-playback-start")
         self.iconPause = Icons.new(self, "media-playback-pause")
 
-    @QtCore.pyqtSlot(ui_pb2.NotificationReply)
-    def _cb_notification_callback(self, reply):
+    def _configure_plugins(self):
+        for conf in self._action_list:
+            action = self._action_list[conf]
+            for name in action['actions']:
+                try:
+                    action['actions'][name].configure(self)
+                except Exception as e:
+                    print("procdialog._configure_plugins() exception:", name, " you may want to enable this plugin -", e)
+
+    @QtCore.pyqtSlot(str, ui_pb2.NotificationReply)
+    def _cb_notification_callback(self, addr, reply):
         if reply.id not in self._notifications_sent:
             print("[stats] unknown notification received: ", reply.id)
         else:
@@ -118,10 +137,14 @@ class ProcessDetailsDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0])
                 self._delete_notification(reply.id)
                 return
 
-            if noti.type == ui_pb2.MONITOR_PROCESS and reply.data != "":
+            if noti.type != ui_pb2.TASK_START:
+                print("proc-details, invalid notification type?", noti)
+                return
+
+            if noti.type == ui_pb2.TASK_START and reply.data != "":
                 self._load_data(reply.data)
 
-            elif noti.type == ui_pb2.STOP_MONITOR_PROCESS:
+            elif noti.type == ui_pb2.TASK_STOP:
                 if reply.data != "":
                     self._show_message(
                         QtCore.QCoreApplication.translate(
@@ -219,7 +242,12 @@ class ProcessDetailsDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0])
                 return
 
             self._set_button_running(True)
-            noti = ui_pb2.Notification(clientName="", serverName="", type=ui_pb2.MONITOR_PROCESS, data=self._pid, rules=[])
+            noti = ui_pb2.Notification(
+                clientName="",
+                serverName="",
+                type=ui_pb2.TASK_START,
+                data=self._build_notification_message(self._pid),
+                rules=[])
             self._nid = self._nodes.send_notification(self._pids[self._pid], noti, self._notification_callback)
             self._notifications_sent[self._nid] = noti
         except Exception as e:
@@ -230,7 +258,12 @@ class ProcessDetailsDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0])
             return
 
         self._set_button_running(False)
-        noti = ui_pb2.Notification(clientName="", serverName="", type=ui_pb2.STOP_MONITOR_PROCESS, data=str(self._pid), rules=[])
+        noti = ui_pb2.Notification(
+            clientName="",
+            serverName="",
+            type=ui_pb2.TASK_STOP,
+            data=self._build_notification_message(self._pid),
+            rules=[])
         self._nid = self._nodes.send_notification(self._pids[self._pid], noti, self._notification_callback)
         self._notifications_sent[self._nid] = noti
         self._pid = ""
@@ -350,7 +383,21 @@ class ProcessDetailsDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0])
     def _load_descriptors(self, descriptors):
         text = "%-12s%-40s%-8s -> %s\n\n" % ("Size", "Time", "Name", "Symlink")
         for d in descriptors:
+            if self.checkFilterFiles.isChecked() and d['Size'] == 0:
+                continue
             text += "{:<12}{:<40}{:<8} -> {}\n".format(str(d['Size']), d['ModTime'], d['Name'], d['SymLink'])
+
+        if self.checkFilterSockets.isChecked():
+            matches = self._socketsRE.findall(text)
+            if len(matches) > 0:
+                sockets = ""
+                for m in matches:
+                    sockets = "{0}\n{1}".format(sockets, m)
+
+                if self.checkFilterFiles.isChecked():
+                    text += sockets
+                else:
+                    text = sockets
 
         self._set_tab_text(self.TAB_DESCRIPTORS, text)
 
@@ -365,4 +412,6 @@ class ProcessDetailsDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0])
 
         self._set_tab_text(self.TAB_ENVS, text)
 
-
+    def _build_notification_message(self, pid):
+        # TODO: make interval configurable
+        return '{"name": "pid-monitor", "data": { "interval": "5s", "pid": "%s" }}' % pid

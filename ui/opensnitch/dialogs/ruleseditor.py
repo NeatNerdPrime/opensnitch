@@ -48,7 +48,7 @@ class RulesEditorDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0]):
     PW_USER = 0
     PW_UID = 2
 
-    _notification_callback = QtCore.pyqtSignal(ui_pb2.NotificationReply)
+    _notification_callback = QtCore.pyqtSignal(str, ui_pb2.NotificationReply)
 
     def __init__(self, parent=None, _rule=None, appicon=None):
         super(RulesEditorDialog, self).__init__(parent)
@@ -302,8 +302,8 @@ class RulesEditorDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0]):
 
         self._rules.updated.emit(0)
 
-    @QtCore.pyqtSlot(ui_pb2.NotificationReply)
-    def _cb_notification_callback(self, reply):
+    @QtCore.pyqtSlot(str, ui_pb2.NotificationReply)
+    def _cb_notification_callback(self, addr, reply):
         #print(self.LOG_TAG, "Rule notification received: ", reply.id, reply.code)
         if reply.id in self._notifications_sent:
             if reply.code == ui_pb2.OK:
@@ -364,6 +364,16 @@ class RulesEditorDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0]):
         except re.error as e:
             self.statusLabel.setText(str(e))
             return False
+
+    def _is_valid_list_path(self, listWidget):
+        if listWidget.text() == "":
+            return QC.translate("rules", "Lists field cannot be empty")
+        if self._nodes.is_local(self.nodesCombo.currentText()) and \
+            self.nodeApplyAllCheck.isChecked() == False and \
+            os.path.isdir(listWidget.text()) == False:
+            return QC.translate("rules", "Lists field must be a directory")
+
+        return None
 
     def set_fields_from_connection(self, records):
         self.nodesCombo.setCurrentText(records.value(ConnFields.Node))
@@ -932,10 +942,9 @@ class RulesEditorDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0]):
                     return False, QC.translate("rules", "PID field regexp error")
 
         if self.dstListsCheck.isChecked():
-            if self.dstListsLine.text() == "":
-                return False, QC.translate("rules", "Lists field cannot be empty")
-            if os.path.isdir(self.dstListsLine.text()) == False:
-                return False, QC.translate("rules", "Lists field must be a directory")
+            error = self._is_valid_list_path(self.dstListsLine)
+            if error:
+                return False, error
 
             self.rule.operator.type = Config.RULE_TYPE_LISTS
             self.rule.operator.operand = Config.OPERAND_LIST_DOMAINS
@@ -949,10 +958,9 @@ class RulesEditorDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0]):
             self.rule.operator.data = ""
 
         if self.dstListRegexpCheck.isChecked():
-            if self.dstRegexpListsLine.text() == "":
-                return False, QC.translate("rules", "Lists field cannot be empty")
-            if os.path.isdir(self.dstRegexpListsLine.text()) == False:
-                return False, QC.translate("rules", "Lists field must be a directory")
+            error = self._is_valid_list_path(self.dstRegexpListsLine)
+            if error:
+                return False, error
 
             self.rule.operator.type = Config.RULE_TYPE_LISTS
             self.rule.operator.operand = Config.OPERAND_LIST_DOMAINS_REGEXP
@@ -966,10 +974,9 @@ class RulesEditorDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0]):
             self.rule.operator.data = ""
 
         if self.dstListNetsCheck.isChecked():
-            if self.dstListNetsLine.text() == "":
-                return False, QC.translate("rules", "Lists field cannot be empty")
-            if os.path.isdir(self.dstListNetsLine.text()) == False:
-                return False, QC.translate("rules", "Lists field must be a directory")
+            error = self._is_valid_list_path(self.dstListNetsLine)
+            if error:
+                return False, error
 
             self.rule.operator.type = Config.RULE_TYPE_LISTS
             self.rule.operator.operand = Config.OPERAND_LIST_NETS
@@ -984,10 +991,9 @@ class RulesEditorDialog(QtWidgets.QDialog, uic.loadUiType(DIALOG_UI_PATH)[0]):
 
 
         if self.dstListIPsCheck.isChecked():
-            if self.dstListIPsLine.text() == "":
-                return False, QC.translate("rules", "Lists field cannot be empty")
-            if os.path.isdir(self.dstListIPsLine.text()) == False:
-                return False, QC.translate("rules", "Lists field must be a directory")
+            error = self._is_valid_list_path(self.dstListIPsLine)
+            if error:
+                return False, error
 
             self.rule.operator.type = Config.RULE_TYPE_LISTS
             self.rule.operator.operand = Config.OPERAND_LIST_IPS
