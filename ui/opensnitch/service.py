@@ -65,7 +65,7 @@ class UIService(ui_pb2_grpc.UIServicer, QtWidgets.QGraphicsObject):
         self.MENU_ENTRY_FW_ENABLE = QtCore.QCoreApplication.translate("contextual_menu", "Enable")
         self.MENU_ENTRY_FW_DISABLE = QtCore.QCoreApplication.translate("contextual_menu", "Disable")
         self.MENU_ENTRY_HELP = QtCore.QCoreApplication.translate("contextual_menu", "Help")
-        self.MENU_ENTRY_CLOSE = QtCore.QCoreApplication.translate("contextual_menu", "Close")
+        self.MENU_ENTRY_QUIT = QtCore.QCoreApplication.translate("contextual_menu", "Quit")
 
         # set of actions that must be performed on the main thread
         self.NODE_ADD = 0
@@ -247,7 +247,7 @@ class UIService(ui_pb2_grpc.UIServicer, QtWidgets.QGraphicsObject):
         self._menu.addAction(self.MENU_ENTRY_HELP).triggered.connect(
                 lambda: QtGui.QDesktopServices.openUrl(QtCore.QUrl(Config.HELP_CONFIG_URL))
                 )
-        self._menu.addAction(self.MENU_ENTRY_CLOSE).triggered.connect(self._on_close)
+        self._menu.addAction(self.MENU_ENTRY_QUIT).triggered.connect(self._on_close)
 
         self._menu.aboutToShow.connect(self._on_show_menu)
 
