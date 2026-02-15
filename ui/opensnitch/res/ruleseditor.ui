@@ -1113,7 +1113,7 @@ You must name the rule in such manner that it'll be checked first, because they'
         </item>
         <item>
          <property name="text">
-          <string>always</string>
+          <string>forever</string>
          </property>
         </item>
        </widget>
@@ -1132,7 +1132,7 @@ You must name the rule in such manner that it'll be checked first, because they'
            <string>Deny will just discard the connection</string>
           </property>
           <property name="text">
-           <string>Deny</string>
+           <string>Drop</string>
           </property>
           <property name="icon">
            <iconset theme="emblem-important">
