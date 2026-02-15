@@ -1346,5 +1346,7 @@ class StatsDialog(menus.MenusManager, menu_actions.MenuActions, views.ViewsManag
 
     # https://gis.stackexchange.com/questions/86398/how-to-disable-the-escape-key-for-a-dialog
     def keyPressEvent(self, event):
+        if event.matches(QtGui.QKeySequence.StandardKey.Find) or event.key() == QtCore.Qt.Key.Key_Slash:
+            self.get_search_widget().setFocus()
         if not event.key() == QtCore.Qt.Key.Key_Escape:
             super(StatsDialog, self).keyPressEvent(event)
