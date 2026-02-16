@@ -122,7 +122,7 @@ class Actions(QObject):
         self._plugin_mgr = PluginsManager.instance()
         try:
             base_dir = "{0}/{1}".format(xdg_config_home, "/opensnitch/actions/")
-            os.makedirs(base_dir, 0o700)
+            os.makedirs(base_dir, 0o700, True)
         except Exception as e:
             self.logger.warning("actions.__init__ exception: %s", repr(e))
         #print("ActionsLists:", PluginsList.actions)
