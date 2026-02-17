@@ -114,10 +114,12 @@ int tracepoint__syscalls_sys_enter_execve(struct trace_sys_enter_execve* ctx)
 
     data->args_count = 0;
     data->args_partial = INCOMPLETE_ARGS;
+#if defined(__arm__) || defined(__i386__) || defined(__aarch64__)
+    bpf_ringbuf_output(&events, data, sizeof(*data), 0);
+    return 0;
+#endif
     bpf_probe_read_user_str(&data->filename, sizeof(data->filename), (const char *)ctx->filename);
 
-// FIXME: on i386 arch, the following code fails with permission denied.
-#if !defined(__arm__) && !defined(__i386__)
     const char *argp={0};
 
     #pragma unroll
@@ -130,12 +132,7 @@ int tracepoint__syscalls_sys_enter_execve(struct trace_sys_enter_execve* ctx)
         }
         data->args_count++;
     }
-#endif
 
-// FIXME: on aarch64 we fail to save the event to execMap, so send it to userspace here.
-#if defined(__aarch64__)
-    bpf_ringbuf_output(&events, data, sizeof(*data), 0);
-#else
     u64 pid_tgid = bpf_get_current_pid_tgid();
     // in case of failure adding the item to the map, send it directly
     if (bpf_map_update_elem(&execMap, &pid_tgid, data, BPF_ANY) != 0) {
@@ -161,7 +158,6 @@ int tracepoint__syscalls_sys_enter_execve(struct trace_sys_enter_execve* ctx)
 
         bpf_ringbuf_output(&events, data, sizeof(*data), 0);
     }
-#endif
 
     return 0;
 };
@@ -183,9 +179,11 @@ int tracepoint__syscalls_sys_enter_execveat(struct trace_sys_enter_execveat* ctx
 
     data->args_count = 0;
     data->args_partial = INCOMPLETE_ARGS;
+#if defined(__arm__) || defined(__i386__) || defined(__aarch64__)
+    bpf_ringbuf_output(&events, data, sizeof(*data), 0);
+    return 0;
+#endif
 
-// FIXME: on i386 arch, the following code fails with permission denied.
-#if !defined(__arm__) && !defined(__i386__)
     const char *argp={0};
 
     #pragma unroll
@@ -198,17 +196,12 @@ int tracepoint__syscalls_sys_enter_execveat(struct trace_sys_enter_execveat* ctx
         }
         data->args_count++;
     }
-#endif
 
-#if defined(__aarch64__)
-    bpf_ringbuf_output(&events, data, sizeof(*data), 0);
-#else
     u64 pid_tgid = bpf_get_current_pid_tgid();
     if (bpf_map_update_elem(&execMap, &pid_tgid, data, BPF_ANY) != 0) {
 
         bpf_ringbuf_output(&events, data, sizeof(*data), 0);
     }
-#endif
 
     return 0;
 };
