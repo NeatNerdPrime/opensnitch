@@ -721,7 +721,8 @@ class GenericTableView(QTableView):
                 self.onKeySpace()
 
         elif event.type() == QEvent.Type.Wheel:
-            self.vScrollBar.wheelEvent(event)
-            return True
+            if not self.horizontalScrollBar().underMouse():
+                self.vScrollBar.wheelEvent(event)
+                return True
 
         return super(GenericTableView, self).eventFilter(obj, event)
