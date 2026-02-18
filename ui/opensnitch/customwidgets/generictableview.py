@@ -726,8 +726,10 @@ class GenericTableView(QTableView):
                 delta = event.angleDelta().y()
                 step = hBar.singleStep() * 2
                 hBar.setValue(hBar.value() - (step if delta > 0 else -step))
-            else:
+                return True
+
+            if event.angleDelta().y() != 0:
                 self.vScrollBar.wheelEvent(event)
-            return True
+                return True
 
         return super(GenericTableView, self).eventFilter(obj, event)
