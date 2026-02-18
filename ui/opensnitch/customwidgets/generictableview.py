@@ -721,8 +721,13 @@ class GenericTableView(QTableView):
                 self.onKeySpace()
 
         elif event.type() == QEvent.Type.Wheel:
-            if not self.horizontalScrollBar().underMouse():
+            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                hBar = self.horizontalScrollBar()
+                delta = event.angleDelta().y()
+                step = hBar.singleStep() * 2
+                hBar.setValue(hBar.value() - (step if delta > 0 else -step))
+            else:
                 self.vScrollBar.wheelEvent(event)
-                return True
+            return True
 
         return super(GenericTableView, self).eventFilter(obj, event)
