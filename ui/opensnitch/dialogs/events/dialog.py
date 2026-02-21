@@ -204,7 +204,7 @@ class StatsDialog(menus.MenusManager, menu_actions.MenuActions, views.ViewsManag
                 self.TABLES[constants.TAB_ALERTS]['name'],
                 self.TABLES[constants.TAB_ALERTS]['header_labels']
             ),
-            verticalScrollBar=self.rulesScrollBar,
+            verticalScrollBar=self.alertsScrollBar,
             delegate=self.TABLES[constants.TAB_ALERTS]['delegate'],
             order_by=self.TABLES[constants.TAB_ALERTS]['last_order_by'],
             sort_direction= constants.SORT_ORDER[0])
@@ -984,8 +984,9 @@ class StatsDialog(menus.MenusManager, menu_actions.MenuActions, views.ViewsManag
         showAlertsTable = (parent_row == -1 and item_row == constants.RULES_TREE_ALERTS)
         self.fwTable.setVisible(showFwTable)
         self.alertsTable.setVisible(showAlertsTable)
+        self.alertsScrollBar.setVisible(showAlertsTable)
         self.rulesTable.setVisible(not showFwTable and not showAlertsTable)
-        self.rulesScrollBar.setVisible(not showFwTable)
+        self.rulesScrollBar.setVisible(not showFwTable and not showAlertsTable)
 
         self.queries.set_rules_filter(parent_row, item_row, item_text, node_addr, fw_table)
 

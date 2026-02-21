@@ -932,6 +932,13 @@
             </widget>
            </item>
            <item>
+            <widget class="QScrollBar" name="alertsScrollBar">
+             <property name="orientation">
+              <enum>Qt::Vertical</enum>
+             </property>
+            </widget>
+           </item>
+           <item>
             <widget class="QScrollBar" name="rulesScrollBar">
              <property name="orientation">
               <enum>Qt::Vertical</enum>
