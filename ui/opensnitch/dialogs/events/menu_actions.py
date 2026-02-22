@@ -344,10 +344,8 @@ class MenuActions(views.ViewsManager):
             self.refresh_active_table()
 
         elif cur_idx == constants.TAB_RULES and self.alertsTable.isVisible():
-            for idx in selection:
-                time = model.index(idx.row(), constants.COL_TIME).data()
-                node = model.index(idx.row(), constants.COL_NODE).data()
-                self._db.delete_alert(time, node)
+            for row in selection:
+                self._db.delete_alert(row[constants.COL_TIME], row[constants.COL_NODE])
 
         elif cur_idx == constants.TAB_HOSTS or cur_idx == constants.TAB_PROCS or cur_idx == constants.TAB_ADDRS or \
             cur_idx == constants.TAB_USERS or cur_idx == constants.TAB_PORTS:
