@@ -7,10 +7,10 @@ class NodesManager:
         self._nodes = Nodes.instance()
         self._notifications_sent = {}
 
-    def node_start_interception(self, addr, callback):
+    def node_start_interception(self, addr=None, callback=None):
         return self._nodes.start_interception(_addr=addr, _callback=callback)
 
-    def node_stop_interception(self, addr, callback):
+    def node_stop_interception(self, addr=None, callback=None):
         return self._nodes.stop_interception(_addr=addr, _callback=callback)
 
     def node_get(self, addr):

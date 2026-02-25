@@ -1003,9 +1003,9 @@ class StatsDialog(menus.MenusManager, menu_actions.MenuActions, views.ViewsManag
         self._status_changed_trigger.emit(self.startButton.isChecked())
 
         if self.startButton.isChecked():
-            nid, noti = self.start_interception(self._notification_callback)
+            nid, noti = self.node_start_interception(callback=self._notification_callback)
         else:
-            nid, noti = self.stop_interception(self._notification_callback)
+            nid, noti = self.node_stop_interception(callback=self._notification_callback)
 
         self.save_ntf(nid, noti)
 
