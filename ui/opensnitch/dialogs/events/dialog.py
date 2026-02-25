@@ -703,7 +703,7 @@ class StatsDialog(menus.MenusManager, menu_actions.MenuActions, views.ViewsManag
         else:
             qstr = qstr + self.get_view_limit()
 
-        self.queries.setQuery(model, qstr)
+        self.queries.setQuery(model, qstr, limit=self.get_query_limit())
 
     def _cb_combo_action_changed(self, idx):
         if self.get_current_view_idx() != constants.TAB_MAIN:
@@ -1301,7 +1301,6 @@ class StatsDialog(menus.MenusManager, menu_actions.MenuActions, views.ViewsManag
             # do not update any tab if the window is not visible
             if self.isVisible() and self.isMinimized() is False and self.needs_refresh():
                 self._trigger.emit(is_local, need_query_update)
-                self._last_update = datetime.datetime.now()
 
     @QtCore.pyqtSlot(bool, bool)
     def _on_update_triggered(self, is_local, need_query_update=False):
@@ -1324,6 +1323,7 @@ class StatsDialog(menus.MenusManager, menu_actions.MenuActions, views.ViewsManag
 
         if need_query_update and not self.are_rows_selected():
             self.refresh_active_table()
+            self._last_update = datetime.datetime.now()
 
     # prevent a click on the window's x
     # from quitting the whole application

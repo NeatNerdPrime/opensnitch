@@ -93,7 +93,8 @@ class ViewsManager(config.ConfigManager, nodes.NodesManager, base.EventsBase):
         # "SELECT " + fields + " FROM " + table_name + group_by + " ORDER BY " + order_by + " " + sort_direction + limit)
         self.queries.setQuery(
             model,
-            f"SELECT {fields} FROM {table_name}{group_by} ORDER BY {order_by} {sort_direction}{limit}"
+            f"SELECT {fields} FROM {table_name}{group_by} ORDER BY {order_by} {sort_direction}{limit}",
+            limit=self.get_query_limit()
         )
         tableWidget.setModel(model)
 
@@ -170,6 +171,12 @@ class ViewsManager(config.ConfigManager, nodes.NodesManager, base.EventsBase):
         if limit == "":
             return ""
         return " " + limit
+
+    def get_query_limit(self):
+        limit = 0
+        if self.limitCombo.currentText() != "":
+            limit = int(self.limitCombo.currentText())
+        return limit
 
     def get_view_order(self, field=None):
         cur_idx = self.get_current_view_idx()
@@ -260,7 +267,7 @@ class ViewsManager(config.ConfigManager, nodes.NodesManager, base.EventsBase):
 
         if text == "" and not self.in_detail_view(cur_idx):
             qstr = self.queries.get_view_query(model, cur_idx)
-            self.queries.setQuery(model, qstr)
+            self.queries.setQuery(model, qstr, limit=self.get_query_limit())
             return
 
         adv_filter = self.queries.advanced_search(text)
@@ -294,7 +301,7 @@ class ViewsManager(config.ConfigManager, nodes.NodesManager, base.EventsBase):
             qstr = self.queries.get_view_query(model, cur_idx, where_clause)
 
         if qstr is not None:
-            self.queries.setQuery(model, qstr)
+            self.queries.setQuery(model, qstr, limit=self.get_query_limit())
 
     def on_splitter_moved(self, tab, pos, index):
         if tab ==  constants.TAB_RULES:
@@ -359,7 +366,7 @@ class ViewsManager(config.ConfigManager, nodes.NodesManager, base.EventsBase):
             q = qstr.strip(" ") + self.get_view_order()
 
         q += self.get_view_limit()
-        self.queries.setQuery(model, q)
+        self.queries.setQuery(model, q, limit=self.get_query_limit())
 
         header = self.get_active_table().horizontalHeader()
         sort_order = QtCore.Qt.SortOrder.DescendingOrder if sortOrder.value == constants.SORT_DESC else QtCore.Qt.SortOrder.AscendingOrder
@@ -537,7 +544,7 @@ class ViewsManager(config.ConfigManager, nodes.NodesManager, base.EventsBase):
                 where_clause = self.queries.get_filter_line(cur_idx, filter_text)
 
             qstr = self.queries.get_view_query(model, cur_idx, where_clause)
-            self.queries.setQuery(model, qstr)
+            self.queries.setQuery(model, qstr, limit=self.get_query_limit(), offset=0)
         finally:
             self.get_search_widget().setCompleter(self.queries.get_completer(cur_idx))
             self.restore_details_view_columns(
@@ -616,7 +623,7 @@ class ViewsManager(config.ConfigManager, nodes.NodesManager, base.EventsBase):
         lastQuery = model.query().lastQuery()
         if "LIMIT" not in lastQuery:
             lastQuery += self.get_view_limit()
-        self.queries.setQuery(model, lastQuery)
+        self.queries.setQuery(model, lastQuery, limit=self.get_query_limit())
         #else:
         #    model.refresh()
         self.TABLES[cur_idx]['view'].refresh()

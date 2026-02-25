@@ -157,7 +157,7 @@ class FirewallTableModel(QStandardItemModel):
     def query(self):
         return QSqlQuery()
 
-    def setQuery(self, q, db, args=None):
+    def setQuery(self, q, db, args=None, limit=0, offset=0):
         self.refresh()
 
     def nextRecord(self, offset):
