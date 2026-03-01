@@ -1,11 +1,20 @@
-# OpenSnitch - 2023
+# OpenSnitch - 2026
 #
 # On Debian based distros we need the following 2 directories.
 # Otherwise, just use the kernel headers from the kernel sources.
 #
-KERNEL_VER ?= $(shell ls -d /lib/modules/*/source | sort | tail -1 | cut -d/ -f4)
-KERNEL_DIR ?= /lib/modules/$(KERNEL_VER)/source
+KERNEL_VER ?= $(shell find /lib/modules/* -maxdepth 1 \( -type d -o -type l \) \( -name "build" -o -name "source" \) | sort | tail -1 | cut -d/ -f4)
+ifeq ($(KERNEL_VER),)
+	$(error KERNEL_VER is missing.)
+endif
+KERNEL_DIR ?= $(shell find /lib/modules/$(KERNEL_VER) -maxdepth 1 \( -type d -o -type l \) \( -name "build" -o -name "source" \) | sort | tail -1)
+ifeq ($(KERNEL_DIR),)
+	$(error KERNEL_DIR is missing.)
+endif
 KERNEL_HEADERS ?= /usr/src/linux-headers-$(KERNEL_VER)/
+# use KERNEL_ARCH, as ARCH is being changed
+KERNEL_ARCH ?= $(shell uname -m)
+KERNEL_6_19_CHECK = $(shell expr "$(KERNEL_VER)" \>= "6.19")
 CC = clang
 LLC ?= llc
 ARCH ?= $(shell uname -m)
@@ -30,10 +39,32 @@ else ifeq ($(ARCH),s390x)
 	ARCH := s390
 endif
 
+# https://best.openssf.org/Compiler-Hardening-Guides/Compiler-Options-Hardening-Guide-for-C-and-C++#tldr-what-compiler-options-should-i-use
+EXTRA_FLAGS = -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3
+
 ifeq ($(ARCH),arm)
 	# on previous archs, it fails with "SMP not supported on pre-ARMv6"
-	EXTRA_FLAGS = "-D__LINUX_ARM_ARCH__=7"
+	EXTRA_FLAGS += -D__LINUX_ARM_ARCH__=7
 endif
+# https://best.openssf.org/Compiler-Hardening-Guides/Compiler-Options-Hardening-Guide-for-C-and-C++#enable-control-flow-and-branch-protection-against-return-oriented-programming-and-jump-oriented-programming-attacks
+ifeq ($(KERNEL_ARCH),x86_64)
+	EXTRA_FLAGS += -fcf-protection=full
+endif
+ifeq ($(KERNEL_ARCH),aarch64)
+	EXTRA_FLAGS += -mbranch-protection=standard
+endif
+# https://lore.kernel.org/bpf/20251208130748.68371-1-qmo@kernel.org/
+ifeq ($(KERNEL_6_19_CHECK),1)
+	EXTRA_FLAGS += -Wno-microsoft-anon-tag -fms-extensions
+endif
+
+$(info ebpf_prog build env:)
+$(info ARCH           = $(ARCH))
+$(info KERNEL_VER     = $(KERNEL_VER))
+$(info KERNEL_DIR     = $(KERNEL_DIR))
+$(info KERNEL_HEADERS = $(KERNEL_HEADERS))
+$(info KERNEL_ARCH    = $(KERNEL_ARCH))
+$(info EXTRA_FLAGS    = $(EXTRA_FLAGS))
 
 SRC := $(wildcard *.c)
 BIN := $(SRC:.c=.o)
