@@ -430,14 +430,19 @@ class Database:
 
         return None
 
-    def remove(self, qstr):
+    def remove(self, qstr, args=None):
         try:
-            q = QSqlQuery(qstr, self.db)
-            if q.exec():
-                return True
-            else:
-                self.logger.error("db, remove() ERROR: %s", qstr)
-                self.logger.error("%s", q.lastError().driverText())
+            with self._lock:
+                q = QSqlQuery(self.db)
+                q.prepare(qstr)
+                if args:
+                    for arg in args:
+                        q.addBindValue(arg)
+                if q.exec():
+                    return True
+                else:
+                    self.logger.error("db, remove() ERROR: %s", qstr)
+                    self.logger.error("%s", q.lastError().driverText())
         except Exception as e:
             self.logger.warning("db, remove exception: %s", repr(e))
 
